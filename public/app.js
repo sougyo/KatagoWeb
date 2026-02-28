@@ -400,10 +400,20 @@ function buildBoardSvg(board) {
       ghost.setAttribute('visibility', 'hidden')
     );
 
-    // Click → send move
+    // Click → optimistic update then send move
     svg.addEventListener('click', e => {
       if (!e.target.classList.contains('hit')) return;
       const pos = e.target.getAttribute('data-pos');
+
+      // Immediately render the player's stone without waiting for the server.
+      renderGame({
+        ...board,
+        stones:        { ...board.stones, [pos]: 'black' },
+        lastMove:      pos,
+        currentPlayer: 'white',
+        status:        'ai-thinking',
+      });
+
       socket.emit('move', { boardId: state.currentBoardId, position: pos });
     });
   }

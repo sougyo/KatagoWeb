@@ -121,6 +121,7 @@ io.on('connection', socket => {
     }
     try {
       await b.gtp.play('black', position);
+      b.stones          = _parseBoard(await b.gtp.showBoard(), b.size);
       b.moves.push({ color: 'black', position });
       b.lastMove        = position;
       b.currentPlayer   = 'white';
