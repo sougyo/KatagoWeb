@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>KataGo 囲碁</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -40,9 +41,22 @@
           <div id="komi-label" class="komi-label"></div>
         </div>
         <div class="sidebar-controls">
-          <button id="btn-pass"   class="btn btn-warning" disabled>パス</button>
-          <button id="btn-resign" class="btn btn-danger"  disabled>投了</button>
+          <button id="btn-pass"    class="btn btn-warning" disabled>パス</button>
+          <button id="btn-resign"  class="btn btn-danger"  disabled>投了</button>
+          <button id="btn-analyze" class="btn btn-analyze" hidden>分析</button>
         </div>
+
+        <!-- Analysis info panel (visible only in analysis mode) -->
+        <div id="analysis-panel" class="analysis-panel hidden">
+          <div class="wr-label">勝率（黒）</div>
+          <div class="wr-bar-wrap">
+            <div id="wr-black" class="wr-segment wr-b" style="width:50%"></div>
+            <div id="wr-white" class="wr-segment wr-w" style="width:50%"></div>
+          </div>
+          <div id="wr-text"    class="wr-text">黒 50.0% / 白 50.0%</div>
+          <div id="score-text" class="score-text"></div>
+        </div>
+
         <div class="sidebar-history">
           <div class="history-header">棋譜</div>
           <div id="move-list" class="move-list"></div>

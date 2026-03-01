@@ -114,12 +114,13 @@ io.on('connection', socket => {
   // Player move
   socket.on('move', async ({ boardId, position }) => {
     const b = boards.get(boardId);
-    if (!b || b.status !== 'playing' || b.currentPlayer !== 'black') return;
+    if (!b || (b.status !== 'playing' && b.status !== 'analyzing') || b.currentPlayer !== 'black') return;
     if (b.stones[position]) {
       socket.emit('err', 'その場所には石が既にあります');
       return;
     }
     try {
+      if (b.gtp?.isAnalyzing) await b.gtp.stopAnalysis().catch(() => {});
       await b.gtp.play('black', position);
       b.stones          = _parseBoard(await b.gtp.showBoard(), b.size);
       b.moves.push({ color: 'black', position });
@@ -136,8 +137,9 @@ io.on('connection', socket => {
   // Pass
   socket.on('pass', async boardId => {
     const b = boards.get(boardId);
-    if (!b || b.status !== 'playing' || b.currentPlayer !== 'black') return;
+    if (!b || (b.status !== 'playing' && b.status !== 'analyzing') || b.currentPlayer !== 'black') return;
     try {
+      if (b.gtp?.isAnalyzing) await b.gtp.stopAnalysis().catch(() => {});
       await b.gtp.play('black', 'pass');
       b.moves.push({ color: 'black', position: 'pass' });
       b.lastMove      = null;
@@ -151,11 +153,39 @@ io.on('connection', socket => {
   });
 
   // Resign
-  socket.on('resign', boardId => {
+  socket.on('resign', async boardId => {
     const b = boards.get(boardId);
     if (!b || b.status === 'finished') return;
+    if (b.gtp?.isAnalyzing) await b.gtp.stopAnalysis().catch(() => {});
     b.status = 'finished';
     b.result = '投了 – KataGo（白）の勝ち';
+    io.to(boardId).emit('board', boardPublic(b));
+  });
+
+  // Start kata-analyze streaming
+  socket.on('start-analysis', boardId => {
+    const b = boards.get(boardId);
+    if (!b || !b.gtp || b.status !== 'playing' || b.currentPlayer !== 'black') {
+      socket.emit('err', '分析できる状態ではありません');
+      return;
+    }
+    b.status = 'analyzing';
+    io.to(boardId).emit('board', boardPublic(b));
+
+    b.gtp.startAnalysis(200, lines => {
+      const parsed     = lines.map(_parseAnalysisLine);
+      const candidates = parsed.filter(c => c.move && c.move.toLowerCase() !== 'pass');
+      console.log(`[analysis] ${lines.length} lines → ${candidates.length} candidates, top: ${candidates[0]?.move} wr=${candidates[0]?.winrate?.toFixed(3)}`);
+      io.to(boardId).emit('analysis', candidates);
+    });
+  });
+
+  // Stop kata-analyze
+  socket.on('stop-analysis', async boardId => {
+    const b = boards.get(boardId);
+    if (!b || !b.gtp) return;
+    await b.gtp.stopAnalysis().catch(() => {});
+    b.status = 'playing';
     io.to(boardId).emit('board', boardPublic(b));
   });
 });
@@ -215,6 +245,28 @@ async function _aiMove(board) {
   }
 
   io.to(board.id).emit('board', boardPublic(board));
+}
+
+/**
+ * Parse one "info move ..." line from kata-analyze output.
+ * Fields: move, visits, winrate, scoreMean, prior, lcb, order, pv
+ */
+function _parseAnalysisLine(line) {
+  const tok = line.split(' ');
+  const r   = {};
+  for (let i = 0; i < tok.length; i++) {
+    switch (tok[i]) {
+      case 'move':      r.move      = tok[++i]; break;
+      case 'visits':    r.visits    = parseInt(tok[++i], 10); break;
+      case 'winrate':   r.winrate   = parseFloat(tok[++i]); break;
+      case 'scoreMean': r.scoreMean = parseFloat(tok[++i]); break;
+      case 'prior':     r.prior     = parseFloat(tok[++i]); break;
+      case 'lcb':       r.lcb       = parseFloat(tok[++i]); break;
+      case 'order':     r.order     = parseInt(tok[++i], 10); break;
+      case 'pv':        r.pv = tok.slice(i + 1); i = tok.length; break;
+    }
+  }
+  return r;
 }
 
 /**

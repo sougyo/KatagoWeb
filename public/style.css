@@ -445,6 +445,69 @@ html, body {
 #toast.toast-error { border-color: var(--danger); color: #f08080; }
 
 /* ============================================================
+   Analyze button
+   ============================================================ */
+.btn-analyze {
+  background: #1e3a5f;
+  color: #7ec8f5;
+  border: 1px solid #2a5080;
+}
+.btn-analyze:hover { background: #254a78; }
+.btn-analyze-active {
+  background: #1a4a3a;
+  color: #6de8b0;
+  border-color: #2a7055;
+}
+.btn-analyze-active:hover { background: #1f5a46; }
+
+/* ============================================================
+   Analysis panel (win-rate bar + score)
+   ============================================================ */
+.analysis-panel {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.analysis-panel.hidden { display: none !important; }
+
+.wr-label {
+  font-size: .75rem;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.wr-bar-wrap {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+}
+.wr-segment {
+  transition: width .25s ease;
+  height: 100%;
+}
+.wr-b { background: #333; }
+.wr-w { background: #e0e0e0; }
+
+.wr-text {
+  margin-top: 5px;
+  font-size: .78rem;
+  color: var(--text);
+  font-weight: 600;
+}
+.score-text {
+  font-size: .75rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* Status badge */
+.status-analyzing { background: #1e3a5f; color: #7ec8f5; border-color: #2a5080; }
+.badge-analyzing  { background: #1e3a5f; color: #7ec8f5; border-color: #2a5080; }
+
+/* ============================================================
    SVG board – cursor
    ============================================================ */
 .hit { cursor: pointer; }

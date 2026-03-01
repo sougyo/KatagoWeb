@@ -16,6 +16,7 @@ const STATUS_LABELS = {
   initializing:  'KataGo 起動中…',
   playing:       '対局中',
   'ai-thinking': 'AI 思考中…',
+  analyzing:     '分析中',
   finished:      '終局',
   error:         'エラー',
 };
@@ -26,6 +27,8 @@ const STATUS_LABELS = {
 const state = {
   boards:         [],
   currentBoardId: null,
+  currentBoard:   null,   // latest board object from server
+  analysisData:   null,   // latest analysis candidates
 };
 
 const socket = io();
@@ -203,6 +206,9 @@ function renderGame(board) {
   } else if (board.status === 'ai-thinking') {
     statusEl.textContent = '🤔 AI が思考中…';
     statusEl.className   = 'game-status status-thinking';
+  } else if (board.status === 'analyzing') {
+    statusEl.textContent = '🔍 分析中…';
+    statusEl.className   = 'game-status status-analyzing';
   } else if (board.status === 'playing') {
     if (board.currentPlayer === 'black') {
       statusEl.textContent = 'あなたの番です（黒）';
@@ -223,18 +229,33 @@ function renderGame(board) {
     `コミ ${board.komi}  |  置き石 ${board.handicap}`;
 
   // Controls
-  const canPlay = board.status === 'playing' && board.currentPlayer === 'black';
-  const inGame  = board.status === 'playing' || board.status === 'ai-thinking';
+  const canPlay     = (board.status === 'playing' || board.status === 'analyzing') && board.currentPlayer === 'black';
+  const inGame      = board.status === 'playing' || board.status === 'ai-thinking'
+                   || board.status === 'analyzing';
+  const canAnalyze  = board.status === 'playing' && board.currentPlayer === 'black';
+  const isAnalyzing = board.status === 'analyzing';
+  const hasAnalysis = state.analysisData !== null && state.analysisData.length > 0;
+
   document.getElementById('btn-pass').disabled   = !canPlay;
   document.getElementById('btn-resign').disabled = !inGame;
+
+  const btnAnalyze = document.getElementById('btn-analyze');
+  btnAnalyze.hidden    = !(canAnalyze || isAnalyzing);
+  btnAnalyze.textContent = isAnalyzing ? '分析停止' : '分析';
+  btnAnalyze.classList.toggle('btn-analyze-active', isAnalyzing);
+
+  // Analysis panel: 分析中 or 解析データがある間は表示し続ける
+  const panel = document.getElementById('analysis-panel');
+  panel.classList.toggle('hidden', !hasAnalysis && !isAnalyzing);
+  if (hasAnalysis) updateAnalysisPanel(state.analysisData);
 
   // Move history
   renderMoveList(board.moves);
 
-  // Board SVG
+  // Board SVG: 解析データがある間は候補手を表示
   const container = document.getElementById('board-container');
   container.innerHTML = '';
-  container.appendChild(buildBoardSvg(board));
+  container.appendChild(buildBoardSvg(board, hasAnalysis ? state.analysisData : null));
 }
 
 function renderMoveList(moves) {
@@ -261,7 +282,7 @@ function svgEl(tag, attrs = {}) {
   return el;
 }
 
-function buildBoardSvg(board) {
+function buildBoardSvg(board, candidates = null) {
   const { size: N, stones, lastMove, status, currentPlayer } = board;
   const VB = N + 2; // viewBox: 1-unit margin on every side
 
@@ -358,8 +379,51 @@ function buildBoardSvg(board) {
     }
   }
 
+  // ---- Analysis candidate overlay ----
+  if (candidates && candidates.length > 0) {
+    const top = candidates
+      .filter(c => c.move && c.move.toLowerCase() !== 'pass' && !stones[c.move])
+      .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
+      .slice(0, 10);
+    const maxVisits = top.length > 0 ? (top[0].visits ?? 1) : 1;
+    const fontSize = N <= 9 ? '0.32' : N <= 13 ? '0.28' : '0.23';
+
+    for (const c of top) {
+      const xy = gtpToXY(c.move, N);
+      if (!xy) continue;
+      const ratio = (c.visits ?? 0) / maxVisits;
+      const hue   = Math.round((c.winrate ?? 0.5) * 120);      // green=good, red=bad
+      const alpha = (0.55 + ratio * 0.45).toFixed(2);
+
+      // Filled circle: colour encodes winrate, opacity encodes relative visits
+      svg.appendChild(svgEl('circle', {
+        cx: xy.x, cy: xy.y, r: '0.44',
+        fill: `hsla(${hue},80%,35%,${alpha})`,
+        stroke: 'rgba(255,255,255,0.85)', 'stroke-width': '0.05',
+      }));
+
+      // Extra ring on the best move (order === 0)
+      if (c.order === 0) {
+        svg.appendChild(svgEl('circle', {
+          cx: xy.x, cy: xy.y, r: '0.47',
+          fill: 'none', stroke: 'white', 'stroke-width': '0.08',
+        }));
+      }
+
+      // Win-rate percentage label
+      const t = svgEl('text', {
+        x: xy.x, y: xy.y,
+        'text-anchor': 'middle', 'dominant-baseline': 'middle',
+        'font-size': fontSize, 'font-weight': '700',
+        fill: 'white', 'pointer-events': 'none', 'font-family': 'sans-serif',
+      });
+      t.textContent = `${Math.round((c.winrate ?? 0.5) * 100)}`;
+      svg.appendChild(t);
+    }
+  }
+
   // ---- Click layer (only when it is the player's turn) ----
-  if (status === 'playing' && currentPlayer === 'black') {
+  if ((status === 'playing' || status === 'analyzing') && currentPlayer === 'black') {
     // Ghost stone (reused element, repositioned on hover)
     const ghost = svgEl('circle', {
       r: '0.44', fill: 'rgba(0,0,0,0.3)',
@@ -405,6 +469,8 @@ function buildBoardSvg(board) {
       if (!e.target.classList.contains('hit')) return;
       const pos = e.target.getAttribute('data-pos');
 
+      state.analysisData = null; // 着手と同時に解析結果を消去
+
       // Immediately render the player's stone without waiting for the server.
       renderGame({
         ...board,
@@ -426,11 +492,29 @@ function buildBoardSvg(board) {
 // ============================================================
 socket.on('board', board => {
   if (board.id !== state.currentBoardId) return;
+  // 着手（手数が増えた）タイミングで解析結果を消す。停止だけなら残す。
+  const prevLen = state.currentBoard?.moves?.length ?? -1;
+  if (board.moves.length > prevLen) state.analysisData = null;
+  state.currentBoard = board;
   renderGame(board);
 });
 
+// Streaming analysis update: re-render board SVG + panel (fast path)
+socket.on('analysis', candidates => {
+  if (!state.currentBoard || candidates.length === 0) return;
+  console.log('[analysis] received', candidates.length, 'candidates, board status:', state.currentBoard.status);
+  state.analysisData = candidates;
+
+  document.getElementById('analysis-panel').classList.remove('hidden');
+
+  const container = document.getElementById('board-container');
+  container.innerHTML = '';
+  container.appendChild(buildBoardSvg(state.currentBoard, candidates));
+
+  updateAnalysisPanel(candidates);
+});
+
 socket.on('err', msg => {
-  // Show a brief non-blocking notification
   showToast(msg, 'error');
 });
 
@@ -455,6 +539,31 @@ function showToast(msg, type = 'info') {
 }
 
 // ============================================================
+// Analysis panel
+// ============================================================
+function updateAnalysisPanel(candidates) {
+  if (!candidates || candidates.length === 0) return;
+  // Use the best move (order=0) for the win-rate display
+  const best = candidates.find(c => c.order === 0) ?? candidates[0];
+  const bwr  = (best.winrate ?? 0.5) * 100;
+  const wwr  = 100 - bwr;
+
+  document.getElementById('wr-black').style.width = `${bwr.toFixed(1)}%`;
+  document.getElementById('wr-white').style.width = `${wwr.toFixed(1)}%`;
+  document.getElementById('wr-text').textContent  =
+    `黒 ${bwr.toFixed(1)}% / 白 ${wwr.toFixed(1)}%`;
+
+  const sm = best.scoreMean;
+  if (sm != null && !isNaN(sm)) {
+    const side = sm >= 0 ? '黒' : '白';
+    document.getElementById('score-text').textContent =
+      `スコア: ${side} +${Math.abs(sm).toFixed(1)}`;
+  } else {
+    document.getElementById('score-text').textContent = '';
+  }
+}
+
+// ============================================================
 // Bootstrap
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
@@ -469,12 +578,20 @@ document.addEventListener('DOMContentLoaded', () => {
   // Game view
   document.getElementById('btn-back').addEventListener('click', showListView);
   document.getElementById('btn-pass').addEventListener('click', () => {
-    if (state.currentBoardId) socket.emit('pass', state.currentBoardId);
+    if (state.currentBoardId) {
+      state.analysisData = null;
+      socket.emit('pass', state.currentBoardId);
+    }
   });
   document.getElementById('btn-resign').addEventListener('click', () => {
     if (state.currentBoardId && confirm('投了しますか？')) {
       socket.emit('resign', state.currentBoardId);
     }
+  });
+  document.getElementById('btn-analyze').addEventListener('click', () => {
+    if (!state.currentBoardId) return;
+    const isAnalyzing = state.currentBoard?.status === 'analyzing';
+    socket.emit(isAnalyzing ? 'stop-analysis' : 'start-analysis', state.currentBoardId);
   });
 
   loadBoards();
