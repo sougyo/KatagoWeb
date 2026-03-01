@@ -13,7 +13,10 @@
   <div id="view-list" class="view">
     <header class="list-header">
       <h1>KataGo 囲碁</h1>
-      <button id="btn-new-board" class="btn btn-primary">＋ 新しい対局</button>
+      <div class="header-buttons">
+        <button id="btn-new-board" class="btn btn-primary">＋ 新しい対局</button>
+        <button id="btn-new-record" class="btn btn-secondary">＋ 棋譜解析</button>
+      </div>
     </header>
     <main id="board-grid" class="board-grid">
       <!-- Board cards injected by JS -->
@@ -65,6 +68,49 @@
     </div>
   </div>
 
+  <!-- ===== Record View ===== -->
+  <div id="view-record" class="view hidden">
+    <header class="game-header">
+      <button id="btn-rec-back" class="btn btn-ghost btn-sm">← 戻る</button>
+      <h2 id="rec-title" class="game-title">棋譜解析</h2>
+      <div id="rec-status" class="game-status"></div>
+    </header>
+    <div class="game-body">
+      <div id="rec-board-wrap" class="board-wrap">
+        <div id="rec-board-container" class="board-container"></div>
+      </div>
+      <aside class="sidebar">
+        <div class="sidebar-info">
+          <div id="rec-move-info" class="move-count">第 0 手</div>
+          <div id="rec-komi-label" class="komi-label"></div>
+        </div>
+        <div class="sidebar-controls nav-controls">
+          <button id="btn-rec-first" class="btn btn-ghost btn-sm btn-nav" title="最初">⏮</button>
+          <button id="btn-rec-prev"  class="btn btn-ghost btn-sm btn-nav" title="前へ">◀</button>
+          <button id="btn-rec-next"  class="btn btn-ghost btn-sm btn-nav" title="次へ">▶</button>
+          <button id="btn-rec-last"  class="btn btn-ghost btn-sm btn-nav" title="最後">⏭</button>
+        </div>
+        <div class="sidebar-controls">
+          <button id="btn-rec-pass"    class="btn btn-warning" style="display:none">パス</button>
+          <button id="btn-rec-analyze" class="btn btn-analyze">分析</button>
+        </div>
+        <div id="rec-analysis-panel" class="analysis-panel hidden">
+          <div class="wr-label">勝率（黒）</div>
+          <div class="wr-bar-wrap">
+            <div id="rec-wr-black" class="wr-segment wr-b" style="width:50%"></div>
+            <div id="rec-wr-white" class="wr-segment wr-w" style="width:50%"></div>
+          </div>
+          <div id="rec-wr-text"    class="wr-text">黒 50.0% / 白 50.0%</div>
+          <div id="rec-score-text" class="score-text"></div>
+        </div>
+        <div class="sidebar-history">
+          <div class="history-header">棋譜ツリー</div>
+          <div id="rec-move-tree" class="move-list"></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
   <!-- ===== New Board Modal ===== -->
   <div id="modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
     <div class="modal-dialog">
@@ -92,6 +138,63 @@
           <button type="submit" class="btn btn-primary">対局開始</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ===== New Record Modal ===== -->
+  <div id="modal-record" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-dialog">
+      <h2 class="modal-title">棋譜解析</h2>
+      <div class="tab-buttons">
+        <button class="tab-btn active" data-tab="tab-sgf">SGF 読み込み</button>
+        <button class="tab-btn" data-tab="tab-manual">手入力</button>
+      </div>
+
+      <div id="tab-sgf" class="tab-panel">
+        <form id="form-new-record-sgf" autocomplete="off">
+          <div class="form-row">
+            <label for="rec-input-name-sgf">棋譜名</label>
+            <input id="rec-input-name-sgf" type="text" maxlength="50" placeholder="棋譜 1">
+          </div>
+          <div class="form-row">
+            <label for="rec-input-file">SGF ファイル</label>
+            <input id="rec-input-file" type="file" accept=".sgf">
+          </div>
+          <div class="form-row">
+            <label for="rec-input-sgf">または SGF テキスト</label>
+            <textarea id="rec-input-sgf" rows="5" style="resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:.82rem;width:100%" placeholder="(;GM[1]SZ[19]..."></textarea>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost" id="btn-cancel-record-sgf">キャンセル</button>
+            <button type="submit" class="btn btn-primary">作成</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="tab-manual" class="tab-panel hidden">
+        <form id="form-new-record-manual" autocomplete="off">
+          <div class="form-row">
+            <label for="rec-input-name-manual">棋譜名</label>
+            <input id="rec-input-name-manual" type="text" maxlength="50" placeholder="棋譜 1">
+          </div>
+          <div class="form-row">
+            <label for="rec-input-size">碁盤サイズ</label>
+            <select id="rec-input-size">
+              <option value="19" selected>19 × 19</option>
+              <option value="13">13 × 13</option>
+              <option value="9">9 × 9</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label for="rec-input-komi">コミ</label>
+            <input id="rec-input-komi" type="number" step="0.5" value="6.5">
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost" id="btn-cancel-record-manual">キャンセル</button>
+            <button type="submit" class="btn btn-primary">作成</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
 

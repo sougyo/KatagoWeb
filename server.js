@@ -30,6 +30,190 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Server-only fields: gtp (GTPClient instance)
 const boards = new Map();
 
+// ---- In-memory record store ----
+// Map<id, Record>
+// Record: { id, name, size, komi, type:'record', nodes:Map, rootId, currentNodeId, status, gtp, createdAt }
+// Node:   { id, parentId, move:{color,pos}|null, children:[] }
+const records = new Map();
+
+// ---- SGF utilities ----
+
+/** Convert SGF coordinate pair (e.g. 'pd') to GTP string (e.g. 'Q16') for a given board size. */
+function sgfToGtp(coord, size) {
+  if (!coord || coord.length < 2) return null;
+  const GTP_COLS = 'ABCDEFGHJKLMNOPQRST';
+  const a = coord.charCodeAt(0) - 97; // 'a'=0
+  const b = coord.charCodeAt(1) - 97;
+  if (a < 0 || a >= size || b < 0 || b >= size) return null;
+  const col = GTP_COLS[a];
+  const row = size - b;
+  return `${col}${row}`;
+}
+
+/**
+ * Parse an SGF string into { nodes:Map, rootId, size, komi }.
+ * Supports SZ, KM, B, W properties. Handles simple branching.
+ */
+function parseSGF(sgfText) {
+  const GTP_COLS = 'ABCDEFGHJKLMNOPQRST';
+  let pos = 0;
+  const text = sgfText.trim();
+  let size = 19;
+  let komi = 6.5;
+  const nodes = new Map();
+  let nodeCounter = 0;
+
+  function mkNode(parentId, move) {
+    const id = `n${nodeCounter++}`;
+    nodes.set(id, { id, parentId, move, children: [] });
+    if (parentId && nodes.has(parentId)) {
+      nodes.get(parentId).children.push(id);
+    }
+    return id;
+  }
+
+  function skipWS() {
+    while (pos < text.length && /\s/.test(text[pos])) pos++;
+  }
+
+  function parsePropValue() {
+    // Expects cursor at '[', reads until matching ']' (handles '\]' escape)
+    pos++; // skip '['
+    let val = '';
+    while (pos < text.length && text[pos] !== ']') {
+      if (text[pos] === '\\') { pos++; }
+      val += text[pos++];
+    }
+    pos++; // skip ']'
+    return val;
+  }
+
+  function parseNode(parentId) {
+    // node: ';' followed by properties
+    if (text[pos] !== ';') return null;
+    pos++;
+    let move = null;
+    while (pos < text.length) {
+      skipWS();
+      if (text[pos] === ';' || text[pos] === '(' || text[pos] === ')') break;
+      // Read property key
+      let key = '';
+      while (pos < text.length && /[A-Z]/.test(text[pos])) key += text[pos++];
+      if (!key) { pos++; continue; }
+      // Read all values
+      const vals = [];
+      skipWS();
+      while (pos < text.length && text[pos] === '[') {
+        vals.push(parsePropValue());
+        skipWS();
+      }
+      if (key === 'SZ' && vals[0]) size = parseInt(vals[0]) || 19;
+      if (key === 'KM' && vals[0]) komi = parseFloat(vals[0]) || 6.5;
+      if ((key === 'B' || key === 'W') && vals[0] !== undefined) {
+        const coord = vals[0];
+        const gtp = coord === '' ? 'pass' : sgfToGtp(coord, size);
+        if (gtp) move = { color: key === 'B' ? 'black' : 'white', pos: gtp };
+      }
+    }
+    return mkNode(parentId, move);
+  }
+
+  function parseSequence(parentId) {
+    let lastId = parentId;
+    while (pos < text.length) {
+      skipWS();
+      if (text[pos] === ';') {
+        lastId = parseNode(lastId);
+      } else if (text[pos] === '(') {
+        pos++;
+        parseSequence(lastId);
+        skipWS();
+        if (text[pos] === ')') pos++;
+      } else {
+        break;
+      }
+    }
+    return lastId;
+  }
+
+  // Find first '('
+  while (pos < text.length && text[pos] !== '(') pos++;
+  if (pos >= text.length) throw new Error('Invalid SGF: no opening paren');
+  pos++; // skip '('
+
+  // Create root node (no move)
+  const rootId = mkNode(null, null);
+  parseSequence(rootId);
+
+  return { nodes, rootId, size, komi };
+}
+
+function makeRecord({ name, size, komi, sgf }) {
+  const id = crypto.randomUUID();
+  size = parseInt(size) || 19;
+  komi = parseFloat(komi);
+  if (isNaN(komi)) komi = 6.5;
+
+  let nodes, rootId;
+  if (sgf) {
+    const parsed = parseSGF(sgf);
+    nodes  = parsed.nodes;
+    rootId = parsed.rootId;
+    size   = parsed.size;
+    komi   = parsed.komi;
+  } else {
+    nodes  = new Map();
+    rootId = crypto.randomUUID();
+    nodes.set(rootId, { id: rootId, parentId: null, move: null, children: [] });
+  }
+
+  const record = {
+    id,
+    name:          name || `棋譜 ${records.size + 1}`,
+    size,
+    komi,
+    type:          'record',
+    nodes,
+    rootId,
+    currentNodeId: rootId,
+    status:        'idle',
+    gtp:           null,
+    createdAt:     new Date().toISOString(),
+  };
+  records.set(id, record);
+  return record;
+}
+
+function recordPublic(r) {
+  const nodesObj = {};
+  for (const [k, v] of r.nodes) nodesObj[k] = v;
+  return {
+    id:            r.id,
+    name:          r.name,
+    size:          r.size,
+    komi:          r.komi,
+    type:          r.type,
+    nodes:         nodesObj,
+    rootId:        r.rootId,
+    currentNodeId: r.currentNodeId,
+    status:        r.status,
+    createdAt:     r.createdAt,
+  };
+}
+
+/** Returns array of move objects [{color, pos}] from root to nodeId (excluding root's null move). */
+function buildGtpPath(record, nodeId) {
+  const path = [];
+  let cur = nodeId;
+  while (cur && cur !== record.rootId) {
+    const node = record.nodes.get(cur);
+    if (!node) break;
+    if (node.move) path.unshift(node.move);
+    cur = node.parentId;
+  }
+  return path;
+}
+
 function makeBoard({ name, size, handicap }) {
   const id       = crypto.randomUUID();
   size     = parseInt(size)     || 19;
@@ -95,6 +279,35 @@ app.delete('/api/boards/:id', async (req, res) => {
   if (!b) return res.status(404).json({ error: 'Not found' });
   if (b.gtp) await b.gtp.quit().catch(() => {});
   boards.delete(req.params.id);
+  res.json({ ok: true });
+});
+
+// ---- REST API: Records ----
+
+app.get('/api/records', (_req, res) => {
+  res.json([...records.values()].map(recordPublic));
+});
+
+app.post('/api/records', (req, res) => {
+  try {
+    const record = makeRecord(req.body);
+    res.json(recordPublic(record));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/records/:id', (req, res) => {
+  const r = records.get(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  res.json(recordPublic(r));
+});
+
+app.delete('/api/records/:id', async (req, res) => {
+  const r = records.get(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  if (r.gtp) await r.gtp.quit().catch(() => {});
+  records.delete(req.params.id);
   res.json({ ok: true });
 });
 
@@ -193,6 +406,108 @@ io.on('connection', socket => {
     await b.gtp.stopAnalysis().catch(() => {});
     b.status = 'playing';
     io.to(boardId).emit('board', boardPublic(b));
+  });
+
+  // ---- Record Socket.IO handlers ----
+
+  socket.on('join-record', id => {
+    if (currentRoom) socket.leave(currentRoom);
+    currentRoom = id;
+    socket.join(id);
+    const r = records.get(id);
+    if (r) socket.emit('record', recordPublic(r));
+  });
+
+  socket.on('record-navigate', ({ recordId, nodeId }) => {
+    const r = records.get(recordId);
+    if (!r || !r.nodes.has(nodeId)) return;
+    if (r.gtp?.isAnalyzing) r.gtp.stopAnalysis().catch(() => {});
+    r.currentNodeId = nodeId;
+    r.status = 'idle';
+    io.to(recordId).emit('record', recordPublic(r));
+  });
+
+  socket.on('record-add-move', ({ recordId, color, pos }) => {
+    const r = records.get(recordId);
+    if (!r) return;
+    const curNode = r.nodes.get(r.currentNodeId);
+    if (!curNode) return;
+    // Reuse existing child with same move if present
+    for (const childId of curNode.children) {
+      const child = r.nodes.get(childId);
+      if (child && child.move && child.move.color === color && child.move.pos === pos) {
+        r.currentNodeId = childId;
+        io.to(recordId).emit('record', recordPublic(r));
+        return;
+      }
+    }
+    // Create new child node
+    const newId = crypto.randomUUID();
+    r.nodes.set(newId, { id: newId, parentId: r.currentNodeId, move: { color, pos }, children: [] });
+    curNode.children.push(newId);
+    r.currentNodeId = newId;
+    io.to(recordId).emit('record', recordPublic(r));
+  });
+
+  socket.on('record-start-analysis', async recordId => {
+    const r = records.get(recordId);
+    if (!r) return;
+    // Start KataGo if not yet started
+    if (!r.gtp) {
+      r.status = 'initializing';
+      io.to(recordId).emit('record', recordPublic(r));
+      try {
+        const gtp = new GTPClient(KATAGO_BIN, KATAGO_CFG, KATAGO_MDL);
+        r.gtp = gtp;
+        await gtp.start();
+      } catch (e) {
+        r.status = 'error';
+        io.to(recordId).emit('record', recordPublic(r));
+        return;
+      }
+    }
+    // Replay board position
+    try {
+      const gtp = r.gtp;
+      if (gtp.isAnalyzing) await gtp.stopAnalysis().catch(() => {});
+      await gtp.send(`boardsize ${r.size}`);
+      await gtp.send('clear_board');
+      await gtp.send(`komi ${r.komi}`);
+      const path = buildGtpPath(r, r.currentNodeId);
+      for (const { color, pos } of path) {
+        if (pos === 'pass') {
+          await gtp.send(`play ${color} pass`);
+        } else {
+          await gtp.play(color, pos);
+        }
+      }
+      r.status = 'analyzing';
+      io.to(recordId).emit('record', recordPublic(r));
+
+      const accCandidates = new Map();
+      gtp.startAnalysis(20, lines => {
+        for (const c of lines.map(_parseAnalysisLine)) {
+          if (c.move && c.move.toLowerCase() !== 'pass') accCandidates.set(c.move, c);
+        }
+        const candidates = [...accCandidates.values()]
+          .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
+          .slice(0, 10)
+          .map((c, i) => ({ ...c, order: i }));
+        io.to(recordId).emit('record-analysis', candidates);
+      });
+    } catch (e) {
+      console.error(`[record ${recordId}] analysis start failed:`, e.message);
+      r.status = 'idle';
+      io.to(recordId).emit('record', recordPublic(r));
+    }
+  });
+
+  socket.on('record-stop-analysis', async recordId => {
+    const r = records.get(recordId);
+    if (!r || !r.gtp) return;
+    await r.gtp.stopAnalysis().catch(() => {});
+    r.status = 'idle';
+    io.to(recordId).emit('record', recordPublic(r));
   });
 });
 
@@ -305,6 +620,9 @@ process.on('SIGINT', async () => {
   console.log('\nShutting down...');
   for (const b of boards.values()) {
     if (b.gtp) await b.gtp.quit().catch(() => {});
+  }
+  for (const r of records.values()) {
+    if (r.gtp) await r.gtp.quit().catch(() => {});
   }
   process.exit(0);
 });

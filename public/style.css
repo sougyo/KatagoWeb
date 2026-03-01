@@ -508,6 +508,95 @@ html, body {
 .badge-analyzing  { background: #1e3a5f; color: #7ec8f5; border-color: #2a5080; }
 
 /* ============================================================
+   Header buttons (list view)
+   ============================================================ */
+.header-buttons {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+/* ============================================================
+   Secondary button
+   ============================================================ */
+.btn-secondary {
+  background: #3a3a6a;
+  color: #a0a0f0;
+  border: 1px solid #5050a0;
+}
+.btn-secondary:hover { background: #4a4a80; }
+
+/* ============================================================
+   Tab buttons (record modal)
+   ============================================================ */
+.tab-buttons {
+  display: flex;
+  gap: 0;
+  margin-bottom: 18px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.tab-btn {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--surface2);
+  border: none;
+  color: var(--text-muted);
+  font-size: .85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.tab-btn + .tab-btn { border-left: 1px solid var(--border); }
+.tab-btn.active { background: var(--accent); color: #fff; }
+.tab-btn:hover:not(.active) { background: var(--border); color: var(--text); }
+
+.tab-panel { }
+.tab-panel.hidden { display: none !important; }
+
+/* ============================================================
+   Nav controls (record view)
+   ============================================================ */
+.nav-controls {
+  justify-content: center;
+}
+.btn-nav {
+  flex: 1;
+  font-size: 1rem;
+  padding: 6px 4px;
+  min-width: 0;
+}
+
+/* ============================================================
+   Move tree (record view)
+   ============================================================ */
+.move-item.current {
+  background: #1e3b24;
+  color: #6de88b;
+  border-radius: 3px;
+}
+.branch-option {
+  padding-left: 28px;
+  color: #6ab0f5;
+  cursor: pointer;
+}
+.branch-option:hover { background: var(--surface2); }
+.tree-branch-header {
+  padding: 6px 16px 2px;
+  font-size: .75rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+/* ============================================================
+   Badge – record type
+   ============================================================ */
+.badge-record { background: #2a1e4a; color: #a080f0; border-color: #5040a0; }
+
+/* ============================================================
    SVG board – cursor
    ============================================================ */
 .hit { cursor: pointer; }
