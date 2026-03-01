@@ -172,10 +172,16 @@ io.on('connection', socket => {
     b.status = 'analyzing';
     io.to(boardId).emit('board', boardPublic(b));
 
-    b.gtp.startAnalysis(200, lines => {
-      const parsed     = lines.map(_parseAnalysisLine);
-      const candidates = parsed.filter(c => c.move && c.move.toLowerCase() !== 'pass');
-      console.log(`[analysis] ${lines.length} lines → ${candidates.length} candidates, top: ${candidates[0]?.move} wr=${candidates[0]?.winrate?.toFixed(3)}`);
+    const accCandidates = new Map(); // move → candidate (累積)
+    b.gtp.startAnalysis(20, lines => {
+      for (const c of lines.map(_parseAnalysisLine)) {
+        if (c.move && c.move.toLowerCase() !== 'pass') accCandidates.set(c.move, c);
+      }
+      const candidates = [...accCandidates.values()]
+        .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
+        .slice(0, 10)
+        .map((c, i) => ({ ...c, order: i }));
+      console.log(`[analysis] acc ${accCandidates.size} moves, emitting ${candidates.length}, top: ${candidates[0]?.move} wr=${candidates[0]?.winrate?.toFixed(3)}`);
       io.to(boardId).emit('analysis', candidates);
     });
   });
