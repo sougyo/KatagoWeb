@@ -108,7 +108,15 @@ function parseSGF(sgfText) {
         skipWS();
       }
       if (key === 'SZ' && vals[0]) size = parseInt(vals[0]) || 19;
-      if (key === 'KM' && vals[0]) komi = parseFloat(vals[0]) || 6.5;
+      if (key === 'KM' && vals.length > 0) {
+        let k = parseFloat(vals[0]);
+        if (isFinite(k)) {
+          // Some SGF databases store komi in hundredths (e.g. KM[375] = 3.75 pts).
+          // KataGo rejects |komi| > 150, so divide by 100 when out of range.
+          if (Math.abs(k) > 150) k /= 100;
+          komi = k;
+        }
+      }
       if ((key === 'B' || key === 'W') && vals[0] !== undefined) {
         const coord = vals[0];
         const gtp = coord === '' ? 'pass' : sgfToGtp(coord, size);
@@ -452,6 +460,9 @@ io.on('connection', socket => {
   socket.on('record-start-analysis', async recordId => {
     const r = records.get(recordId);
     if (!r) return;
+    // Guard: prevent concurrent starts
+    if (r.status === 'initializing' || r.status === 'analyzing') return;
+
     // Start KataGo if not yet started
     if (!r.gtp) {
       r.status = 'initializing';
@@ -470,9 +481,14 @@ io.on('connection', socket => {
     try {
       const gtp = r.gtp;
       if (gtp.isAnalyzing) await gtp.stopAnalysis().catch(() => {});
+      // KataGo requires komi to be a half-integer (multiple of 0.5).
+      // Round to nearest 0.5 to handle Chinese-rules values like 3.75.
+      const rawKomi = Number.isFinite(r.komi) ? r.komi : 6.5;
+      const komi = Math.round(rawKomi * 2) / 2;
+      console.log(`[record ${recordId}] analysis: size=${r.size}, komi=${komi} (raw=${rawKomi}), node=${r.currentNodeId}`);
       await gtp.send(`boardsize ${r.size}`);
       await gtp.send('clear_board');
-      await gtp.send(`komi ${r.komi}`);
+      await gtp.send(`komi ${komi}`);
       const path = buildGtpPath(r, r.currentNodeId);
       for (const { color, pos } of path) {
         if (pos === 'pass') {
