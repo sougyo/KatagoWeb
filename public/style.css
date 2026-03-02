@@ -660,6 +660,23 @@ html, body {
 .hit { cursor: pointer; }
 
 /* ============================================================
+   Win-rate graph
+   ============================================================ */
+.wr-graph-wrap {
+  padding: 8px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.wr-graph-wrap.hidden { display: none !important; }
+.wr-graph-label {
+  font-size: .72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 4px;
+}
+
+/* ============================================================
    Scrollbar styling (webkit)
    ============================================================ */
 ::-webkit-scrollbar               { width: 6px; }

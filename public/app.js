@@ -511,6 +511,10 @@ function renderGame(board) {
   const container = document.getElementById('board-container');
   container.innerHTML = '';
   container.appendChild(buildBoardSvg(board, hasAnalysis ? state.analysisData : null));
+
+  // Win-rate graph
+  const liveWr = hasAnalysis ? (state.analysisData.find(c => c.order === 0) ?? state.analysisData[0])?.winrate : null;
+  renderWinrateGraph('winrate-graph-wrap', boardWinrateEntries(board.analysisAt, liveWr, board.moves.length), board.moves.length);
 }
 
 function renderMoveList(moves) {
@@ -822,6 +826,11 @@ function renderRecord(record) {
     hasAna ? state.recordAnalysis : null));
 
   renderMoveTree(record);
+
+  // Win-rate graph
+  const liveRecWr = (state.recordAnalysis?.length > 0)
+    ? (state.recordAnalysis.find(c => c.order === 0) ?? state.recordAnalysis[0])?.winrate : null;
+  renderWinrateGraph('rec-winrate-graph-wrap', recordWinrateEntries(nodes, currentNodeId, liveRecWr), moveNum);
 }
 
 function updateRecordAnalysisPanel(candidates) {
@@ -1020,7 +1029,7 @@ socket.on('board', board => {
   renderGame(board);
 });
 
-// Streaming analysis update: re-render board SVG + panel (fast path)
+// Streaming analysis update: re-render board SVG + panel + graph (fast path)
 socket.on('analysis', candidates => {
   if (!state.currentBoard || candidates.length === 0) return;
   console.log('[analysis] received', candidates.length, 'candidates, board status:', state.currentBoard.status);
@@ -1033,6 +1042,12 @@ socket.on('analysis', candidates => {
   container.appendChild(buildBoardSvg(state.currentBoard, candidates));
 
   updateAnalysisPanel(candidates);
+
+  // Update win-rate graph in real-time with the current best winrate
+  const liveWr  = (candidates.find(c => c.order === 0) ?? candidates[0])?.winrate;
+  const moveIdx = state.currentBoard.moves.length;
+  renderWinrateGraph('winrate-graph-wrap',
+    boardWinrateEntries(state.currentBoard.analysisAt, liveWr, moveIdx), moveIdx);
 });
 
 socket.on('err', msg => {
@@ -1064,6 +1079,10 @@ socket.on('record-analysis', candidates => {
   const container = document.getElementById('rec-board-container');
   container.innerHTML = '';
   container.appendChild(buildRecordBoardSvg(state.currentRecord, stones, lastMove, nextColor, candidates));
+  // Update win-rate graph in real-time
+  const liveWr  = (candidates.find(c => c.order === 0) ?? candidates[0])?.winrate;
+  const moveNum = getMoveNumber(nodes, currentNodeId);
+  renderWinrateGraph('rec-winrate-graph-wrap', recordWinrateEntries(nodes, currentNodeId, liveWr), moveNum);
 });
 
 // ============================================================
@@ -1080,6 +1099,112 @@ function showToast(msg, type = 'info') {
   t.className    = `toast toast-${type} visible`;
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.remove('visible'), 3000);
+}
+
+// ============================================================
+// Win-rate graph
+// ============================================================
+
+/** Convert board.analysisAt ({moveIndex: {winrate, scoreMean}}) to sorted entries array.
+ *  If liveWinrate is provided, it overrides or adds the entry for liveMoveIndex. */
+function boardWinrateEntries(analysisAt, liveWinrate, liveMoveIndex) {
+  const entries = Object.entries(analysisAt ?? {})
+    .map(([k, v]) => ({ index: parseInt(k, 10), winrate: v.winrate }))
+    .filter(e => isFinite(e.index) && isFinite(e.winrate))
+    .sort((a, b) => a.index - b.index);
+  if (liveWinrate != null && isFinite(liveWinrate)) {
+    const ex = entries.find(e => e.index === liveMoveIndex);
+    if (ex) { ex.winrate = liveWinrate; }
+    else { entries.push({ index: liveMoveIndex, winrate: liveWinrate }); entries.sort((a, b) => a.index - b.index); }
+  }
+  return entries;
+}
+
+/** Collect win rate entries along the path from root to currentNodeId.
+ *  liveWinrate overrides the value for the current node (while analysis is streaming). */
+function recordWinrateEntries(nodes, currentNodeId, liveWinrate) {
+  const path = [];
+  let cur = currentNodeId;
+  while (cur) { const n = nodes[cur]; if (!n) break; path.unshift(n); cur = n.parentId; }
+  const entries = [];
+  for (let i = 0; i < path.length; i++) {
+    const node = path[i];
+    const wr = (node.id === currentNodeId && liveWinrate != null) ? liveWinrate : node.winrate;
+    if (wr != null && isFinite(wr)) entries.push({ index: i, winrate: wr });
+  }
+  return entries;
+}
+
+/** Build an SVG win-rate graph. entries = [{index, winrate}] sorted ascending. */
+function buildWinrateGraph(entries, currentIndex) {
+  const SVG_W = 200, SVG_H = 62;
+  const PL = 18, PR = 4, PT = 5, PB = 10;
+  const W = SVG_W - PL - PR, H = SVG_H - PT - PB;
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${SVG_W} ${SVG_H}`, width: '100%', height: '62px' });
+
+  // Plot area
+  svg.appendChild(svgEl('rect', { x: PL, y: PT, width: W, height: H, fill: 'var(--bg)', stroke: 'var(--border)', 'stroke-width': '0.5' }));
+
+  // 50% dashed line
+  const midY = PT + H * 0.5;
+  svg.appendChild(svgEl('line', { x1: PL, y1: midY, x2: PL + W, y2: midY, stroke: 'var(--border)', 'stroke-width': '0.8', 'stroke-dasharray': '3,2' }));
+
+  // Y-axis labels
+  const yLab = (text, y) => {
+    const t = svgEl('text', { x: PL - 2, y, 'text-anchor': 'end', 'dominant-baseline': 'middle', 'font-size': '5', 'font-family': 'sans-serif', fill: 'var(--text-muted)' });
+    t.textContent = text; svg.appendChild(t);
+  };
+  yLab('100', PT); yLab('50', midY); yLab('0', PT + H);
+
+  if (entries.length === 0) return svg;
+
+  const maxIdx   = Math.max(currentIndex ?? 0, entries[entries.length - 1].index);
+  const safeMax  = maxIdx > 0 ? maxIdx : 1;
+  const toX = idx => PL + (idx / safeMax) * W;
+  const toY = wr  => PT + (1 - wr) * H;
+
+  // Filled area between win-rate line and 50%
+  if (entries.length >= 2) {
+    let d = `M${toX(entries[0].index)},${midY}`;
+    for (const e of entries) d += ` L${toX(e.index)},${toY(e.winrate)}`;
+    d += ` L${toX(entries[entries.length - 1].index)},${midY} Z`;
+    svg.appendChild(svgEl('path', { d, fill: 'rgba(58,158,82,0.15)', stroke: 'none' }));
+  }
+
+  // Line connecting analyzed positions
+  if (entries.length >= 2) {
+    let d = '';
+    for (let i = 0; i < entries.length; i++) {
+      const x = toX(entries[i].index), y = toY(entries[i].winrate);
+      d += i === 0 ? `M${x},${y}` : ` L${x},${y}`;
+    }
+    svg.appendChild(svgEl('path', { d, fill: 'none', stroke: 'var(--accent)', 'stroke-width': '1.4', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+  }
+
+  // Dots at each analyzed position
+  for (const e of entries) {
+    const x = toX(e.index), y = toY(e.winrate);
+    const isCur = e.index === currentIndex;
+    svg.appendChild(svgEl('circle', { cx: x, cy: y, r: isCur ? '2.5' : '1.8', fill: isCur ? 'var(--accent)' : '#888', stroke: isCur ? 'white' : 'none', 'stroke-width': '1' }));
+  }
+
+  // X-axis: current move label
+  const xLab = svgEl('text', { x: PL + W, y: PT + H + 8, 'text-anchor': 'end', 'font-size': '5', 'font-family': 'sans-serif', fill: 'var(--text-muted)' });
+  xLab.textContent = `第${maxIdx}手`;
+  svg.appendChild(xLab);
+
+  return svg;
+}
+
+/** Render win-rate graph into a container element. */
+function renderWinrateGraph(containerId, entries, currentIndex) {
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  if (entries.length === 0) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  wrap.innerHTML = '<div class="wr-graph-label">勝率グラフ（黒）</div>';
+  wrap.appendChild(buildWinrateGraph(entries, currentIndex));
 }
 
 // ============================================================
