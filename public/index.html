@@ -82,7 +82,16 @@
       <aside class="sidebar">
         <div class="sidebar-info">
           <div id="rec-move-info" class="move-count">第 0 手</div>
-          <div id="rec-komi-label" class="komi-label"></div>
+          <div id="rec-players" class="rec-players"></div>
+          <div id="rec-komi-row" class="rec-komi-row">
+            <span id="rec-komi-label" class="komi-label"></span>
+            <button id="btn-rec-edit-komi" class="btn-icon" title="コミを変更">✏</button>
+          </div>
+          <div id="rec-komi-edit" class="rec-komi-edit hidden">
+            <input id="rec-komi-input" type="number" step="0.5">
+            <button id="btn-rec-komi-save" class="btn btn-sm btn-primary">保存</button>
+            <button id="btn-rec-komi-cancel" class="btn btn-sm btn-ghost">×</button>
+          </div>
         </div>
         <div class="sidebar-controls nav-controls">
           <button id="btn-rec-first" class="btn btn-ghost btn-sm btn-nav" title="最初">⏮</button>
@@ -163,6 +172,17 @@
           <div class="form-row">
             <label for="rec-input-sgf">または SGF テキスト</label>
             <textarea id="rec-input-sgf" rows="5" style="resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:.82rem;width:100%" placeholder="(;GM[1]SZ[19]..."></textarea>
+          </div>
+          <div class="form-row">
+            <label>対局者</label>
+            <div class="sgf-players">
+              <span>● <span id="rec-sgf-pb">—</span></span>
+              <span>○ <span id="rec-sgf-pw">—</span></span>
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="rec-sgf-komi">コミ</label>
+            <input id="rec-sgf-komi" type="number" step="0.5" value="6.5">
           </div>
           <div class="form-actions">
             <button type="button" class="btn btn-ghost" id="btn-cancel-record-sgf">キャンセル</button>

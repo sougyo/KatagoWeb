@@ -281,7 +281,64 @@ html, body {
 .komi-label {
   font-size: .78rem;
   color: var(--text-muted);
+}
+
+/* Player names in record sidebar */
+.rec-players {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: .78rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* Komi row with edit button */
+.rec-komi-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   margin-top: 2px;
+}
+
+.btn-icon {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: .7rem;
+  color: var(--text-muted);
+  padding: 1px 4px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.btn-icon:hover { background: var(--surface2); color: var(--text); }
+
+/* Inline komi edit form */
+.rec-komi-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.rec-komi-edit input {
+  width: 70px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: .85rem;
+  outline: none;
+}
+.rec-komi-edit input:focus { border-color: var(--accent); }
+
+/* Player names in SGF modal */
+.sgf-players {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: .88rem;
+  color: var(--text);
 }
 
 .sidebar-controls {

@@ -60,6 +60,8 @@ function parseSGF(sgfText) {
   const text = sgfText.trim();
   let size = 19;
   let komi = 6.5;
+  let playerBlack = '';
+  let playerWhite = '';
   const nodes = new Map();
   let nodeCounter = 0;
 
@@ -117,6 +119,8 @@ function parseSGF(sgfText) {
           komi = k;
         }
       }
+      if (key === 'PB' && vals[0] !== undefined) playerBlack = vals[0].trim();
+      if (key === 'PW' && vals[0] !== undefined) playerWhite = vals[0].trim();
       if ((key === 'B' || key === 'W') && vals[0] !== undefined) {
         const coord = vals[0];
         const gtp = coord === '' ? 'pass' : sgfToGtp(coord, size);
@@ -153,23 +157,31 @@ function parseSGF(sgfText) {
   const rootId = mkNode(null, null);
   parseSequence(rootId);
 
-  return { nodes, rootId, size, komi };
+  return { nodes, rootId, size, komi, playerBlack, playerWhite };
 }
 
-function makeRecord({ name, size, komi, sgf }) {
+function makeRecord({ name, size, komi: komiOverride, sgf, playerBlack: pbArg, playerWhite: pwArg }) {
   const id = crypto.randomUUID();
-  size = parseInt(size) || 19;
-  komi = parseFloat(komi);
-  if (isNaN(komi)) komi = 6.5;
+  let size_ = parseInt(size) || 19;
+  let komi = 6.5;
+  let playerBlack = pbArg || '';
+  let playerWhite = pwArg || '';
 
   let nodes, rootId;
   if (sgf) {
     const parsed = parseSGF(sgf);
-    nodes  = parsed.nodes;
-    rootId = parsed.rootId;
-    size   = parsed.size;
-    komi   = parsed.komi;
+    nodes       = parsed.nodes;
+    rootId      = parsed.rootId;
+    size_       = parsed.size;
+    komi        = parsed.komi;
+    if (parsed.playerBlack) playerBlack = parsed.playerBlack;
+    if (parsed.playerWhite) playerWhite = parsed.playerWhite;
+    // Allow user to override komi from SGF
+    const ko = parseFloat(komiOverride);
+    if (!isNaN(ko)) komi = ko;
   } else {
+    const ko = parseFloat(komiOverride);
+    komi   = !isNaN(ko) ? ko : 6.5;
     nodes  = new Map();
     rootId = crypto.randomUUID();
     nodes.set(rootId, { id: rootId, parentId: null, move: null, children: [] });
@@ -178,8 +190,10 @@ function makeRecord({ name, size, komi, sgf }) {
   const record = {
     id,
     name:          name || `棋譜 ${records.size + 1}`,
-    size,
+    size:          size_,
     komi,
+    playerBlack,
+    playerWhite,
     type:          'record',
     nodes,
     rootId,
@@ -200,6 +214,8 @@ function recordPublic(r) {
     name:          r.name,
     size:          r.size,
     komi:          r.komi,
+    playerBlack:   r.playerBlack ?? '',
+    playerWhite:   r.playerWhite ?? '',
     type:          r.type,
     nodes:         nodesObj,
     rootId:        r.rootId,
@@ -317,6 +333,17 @@ app.delete('/api/records/:id', async (req, res) => {
   if (r.gtp) await r.gtp.quit().catch(() => {});
   records.delete(req.params.id);
   res.json({ ok: true });
+});
+
+app.patch('/api/records/:id', (req, res) => {
+  const r = records.get(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  if (req.body.komi !== undefined) {
+    const k = parseFloat(req.body.komi);
+    if (!isNaN(k)) r.komi = k;
+  }
+  io.to(r.id).emit('record', recordPublic(r));
+  res.json(recordPublic(r));
 });
 
 // ---- Socket.IO ----

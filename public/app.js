@@ -22,6 +22,33 @@ const STATUS_LABELS = {
 };
 
 // ============================================================
+// SGF meta parser (client-side, lightweight)
+// ============================================================
+function parseSgfMeta(text) {
+  const meta = { komi: 6.5, playerBlack: '', playerWhite: '' };
+  const km = text.match(/KM\[([\d.+\-]+)\]/);
+  if (km) {
+    let k = parseFloat(km[1]);
+    if (isFinite(k)) {
+      if (Math.abs(k) > 150) k /= 100;
+      meta.komi = k;
+    }
+  }
+  const pb = text.match(/PB\[([^\]]*)\]/);
+  if (pb) meta.playerBlack = pb[1].trim();
+  const pw = text.match(/PW\[([^\]]*)\]/);
+  if (pw) meta.playerWhite = pw[1].trim();
+  return meta;
+}
+
+function updateSgfMetaDisplay(text) {
+  const meta = parseSgfMeta(text);
+  document.getElementById('rec-sgf-komi').value      = meta.komi;
+  document.getElementById('rec-sgf-pb').textContent  = meta.playerBlack || '—';
+  document.getElementById('rec-sgf-pw').textContent  = meta.playerWhite || '—';
+}
+
+// ============================================================
 // GoBoard – lightweight board with capture logic (for record replay)
 // ============================================================
 class GoBoard {
@@ -360,6 +387,10 @@ function openRecordModal() {
   document.getElementById('rec-input-name-manual').value = '';
   document.getElementById('rec-input-name-manual').placeholder = `棋譜 ${n}`;
   document.getElementById('rec-input-sgf').value  = '';
+  document.getElementById('rec-input-file').value = '';
+  document.getElementById('rec-sgf-komi').value   = '6.5';
+  document.getElementById('rec-sgf-pb').textContent = '—';
+  document.getElementById('rec-sgf-pw').textContent = '—';
   document.getElementById('rec-input-komi').value = '6.5';
   // Show SGF tab by default
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -704,10 +735,25 @@ function buildBoardSvg(board, candidates = null) {
 
 function renderRecord(record) {
   state.currentRecord = record;
-  const { nodes, rootId, currentNodeId, size, komi, name, status } = record;
+  const { nodes, rootId, currentNodeId, size, komi, name, status, playerBlack, playerWhite } = record;
 
   document.getElementById('rec-title').textContent = name;
-  document.getElementById('rec-komi-label').textContent = `コミ ${komi}  |  ${size}×${size}`;
+
+  // Player names
+  const playersEl = document.getElementById('rec-players');
+  if (playerBlack || playerWhite) {
+    playersEl.innerHTML =
+      `<span>● ${esc(playerBlack || '不明')}</span>` +
+      `<span>○ ${esc(playerWhite || '不明')}</span>`;
+    playersEl.style.display = '';
+  } else {
+    playersEl.style.display = 'none';
+  }
+
+  // Komi label (only update when not editing)
+  if (document.getElementById('rec-komi-edit').classList.contains('hidden')) {
+    document.getElementById('rec-komi-label').textContent = `コミ ${komi}  |  ${size}×${size}`;
+  }
 
   const moveNum = getMoveNumber(nodes, currentNodeId);
   document.getElementById('rec-move-info').textContent = `第 ${moveNum} 手`;
@@ -1080,9 +1126,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = ev => {
-      document.getElementById('rec-input-sgf').value = ev.target.result;
+      const text = ev.target.result;
+      document.getElementById('rec-input-sgf').value = text;
+      updateSgfMetaDisplay(text);
     };
     reader.readAsText(file);
+  });
+
+  // SGF textarea: auto-update meta on input
+  document.getElementById('rec-input-sgf').addEventListener('input', e => {
+    updateSgfMetaDisplay(e.target.value);
   });
 
   // SGF form submit
@@ -1091,12 +1144,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const nameInput = document.getElementById('rec-input-name-sgf');
     const name = nameInput.value.trim() || nameInput.placeholder;
     const sgf  = document.getElementById('rec-input-sgf').value.trim();
+    const komi = document.getElementById('rec-sgf-komi').value;
     if (!sgf) { showToast('SGF テキストを入力してください', 'error'); return; }
     closeRecordModal();
     try {
       const res    = await fetch('/api/records', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, sgf }),
+        body: JSON.stringify({ name, sgf, komi }),
       });
       const record = await res.json();
       if (record.error) throw new Error(record.error);
@@ -1147,6 +1201,36 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!state.currentBoardId) return;
     const isAnalyzing = state.currentBoard?.status === 'analyzing';
     socket.emit(isAnalyzing ? 'stop-analysis' : 'start-analysis', state.currentBoardId);
+  });
+
+  // Record view – komi inline edit
+  async function saveRecordKomi() {
+    const val = parseFloat(document.getElementById('rec-komi-input').value);
+    if (isNaN(val)) return;
+    await fetch(`/api/records/${state.currentRecordId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ komi: val }),
+    });
+    document.getElementById('rec-komi-row').classList.remove('hidden');
+    document.getElementById('rec-komi-edit').classList.add('hidden');
+  }
+
+  document.getElementById('btn-rec-edit-komi').addEventListener('click', () => {
+    if (!state.currentRecord) return;
+    document.getElementById('rec-komi-input').value = state.currentRecord.komi;
+    document.getElementById('rec-komi-row').classList.add('hidden');
+    document.getElementById('rec-komi-edit').classList.remove('hidden');
+    document.getElementById('rec-komi-input').focus();
+  });
+  document.getElementById('btn-rec-komi-save').addEventListener('click', saveRecordKomi);
+  document.getElementById('btn-rec-komi-cancel').addEventListener('click', () => {
+    document.getElementById('rec-komi-row').classList.remove('hidden');
+    document.getElementById('rec-komi-edit').classList.add('hidden');
+  });
+  document.getElementById('rec-komi-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); saveRecordKomi(); }
+    if (e.key === 'Escape') document.getElementById('btn-rec-komi-cancel').click();
   });
 
   // Record view navigation
