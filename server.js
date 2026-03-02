@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const path       = require('path');
 const crypto     = require('crypto');
 const GTPClient  = require('./gtp-client');
+const Database   = require('better-sqlite3');
 
 // ---- KataGo paths ----
 const KATAGO_HOME = process.env.KATAGO_HOME;
@@ -23,18 +24,152 @@ const io     = new Server(server);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---- In-memory board store ----
-// Map<id, Board>
-// Board fields visible to client (via boardPublic): id, name, size, handicap, komi,
-//   status, currentPlayer, moves, stones, lastMove, result, createdAt, moveCount
-// Server-only fields: gtp (GTPClient instance)
-const boards = new Map();
+// ---- SQLite persistence ----
+const db = new Database(path.join(__dirname, 'katago.db'));
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
 
-// ---- In-memory record store ----
-// Map<id, Record>
-// Record: { id, name, size, komi, type:'record', nodes:Map, rootId, currentNodeId, status, gtp, createdAt }
-// Node:   { id, parentId, move:{color,pos}|null, children:[] }
-const records = new Map();
+db.exec(`
+  CREATE TABLE IF NOT EXISTS boards (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    size          INTEGER NOT NULL,
+    handicap      INTEGER NOT NULL,
+    komi          REAL NOT NULL,
+    status        TEXT NOT NULL,
+    currentPlayer TEXT NOT NULL,
+    moves         TEXT NOT NULL,
+    stones        TEXT NOT NULL,
+    lastMove      TEXT,
+    result        TEXT,
+    createdAt     TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS records (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    size          INTEGER NOT NULL,
+    komi          REAL NOT NULL,
+    playerBlack   TEXT NOT NULL DEFAULT '',
+    playerWhite   TEXT NOT NULL DEFAULT '',
+    rootId        TEXT NOT NULL,
+    currentNodeId TEXT NOT NULL,
+    createdAt     TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS record_nodes (
+    id        TEXT PRIMARY KEY,
+    recordId  TEXT NOT NULL,
+    parentId  TEXT,
+    move      TEXT,
+    children  TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY (recordId) REFERENCES records(id) ON DELETE CASCADE
+  );
+`);
+
+// Prepared statements
+const _stmtUpsertBoard = db.prepare(`
+  INSERT OR REPLACE INTO boards
+    (id, name, size, handicap, komi, status, currentPlayer, moves, stones, lastMove, result, createdAt)
+  VALUES
+    (@id, @name, @size, @handicap, @komi, @status, @currentPlayer, @moves, @stones, @lastMove, @result, @createdAt)
+`);
+function saveBoard(b) {
+  _stmtUpsertBoard.run({
+    id: b.id, name: b.name, size: b.size, handicap: b.handicap, komi: b.komi,
+    status: b.status, currentPlayer: b.currentPlayer,
+    moves:   JSON.stringify(b.moves),
+    stones:  JSON.stringify(b.stones),
+    lastMove: b.lastMove  ?? null,
+    result:   b.result    ?? null,
+    createdAt: b.createdAt,
+  });
+}
+const _stmtDeleteBoard = db.prepare('DELETE FROM boards WHERE id = ?');
+
+const _stmtUpsertRecord = db.prepare(`
+  INSERT OR REPLACE INTO records
+    (id, name, size, komi, playerBlack, playerWhite, rootId, currentNodeId, createdAt)
+  VALUES
+    (@id, @name, @size, @komi, @playerBlack, @playerWhite, @rootId, @currentNodeId, @createdAt)
+`);
+const _stmtUpsertNode = db.prepare(`
+  INSERT OR REPLACE INTO record_nodes (id, recordId, parentId, move, children)
+  VALUES (@id, @recordId, @parentId, @move, @children)
+`);
+const _stmtUpdateNodeChildren    = db.prepare('UPDATE record_nodes SET children = ? WHERE id = ?');
+const _stmtUpdateRecordCurrent   = db.prepare('UPDATE records SET currentNodeId = ? WHERE id = ?');
+const _stmtUpdateRecordKomi      = db.prepare('UPDATE records SET komi = ? WHERE id = ?');
+const _stmtDeleteRecord          = db.prepare('DELETE FROM records WHERE id = ?');
+
+function saveRecord(r) {
+  db.transaction(() => {
+    _stmtUpsertRecord.run({
+      id: r.id, name: r.name, size: r.size, komi: r.komi,
+      playerBlack: r.playerBlack, playerWhite: r.playerWhite,
+      rootId: r.rootId, currentNodeId: r.currentNodeId, createdAt: r.createdAt,
+    });
+    for (const [, node] of r.nodes) {
+      _stmtUpsertNode.run({
+        id: node.id, recordId: r.id,
+        parentId: node.parentId ?? null,
+        move:     node.move ? JSON.stringify(node.move) : null,
+        children: JSON.stringify(node.children),
+      });
+    }
+  })();
+}
+
+// ---- In-memory stores ----
+// Loaded from DB on startup; also populated on create / deleted on delete.
+const boards  = new Map();  // Map<id, Board>
+const records = new Map();  // Map<id, Record>
+
+// ---- Load persisted state from DB ----
+{
+  for (const row of db.prepare('SELECT * FROM boards').all()) {
+    let { status, currentPlayer } = row;
+    // Boards that were mid-init: restart fresh on join
+    if (status === 'initializing') status = 'idle';
+    // Boards in analysis: treat as playing (user's turn) on restart
+    if (status === 'analyzing')    status = 'playing';
+    // 'ai-thinking' stays as-is → _ensureGtp will resume AI on join
+    // 'playing', 'finished', 'error' stay as-is
+    boards.set(row.id, {
+      id: row.id, name: row.name, size: row.size, handicap: row.handicap, komi: row.komi,
+      status, currentPlayer,
+      moves:    JSON.parse(row.moves),
+      stones:   JSON.parse(row.stones),
+      lastMove: row.lastMove ?? null,
+      result:   row.result   ?? null,
+      createdAt: row.createdAt,
+      gtp: null,
+    });
+  }
+
+  const nodeRows      = db.prepare('SELECT * FROM record_nodes').all();
+  const nodesByRecord = new Map();
+  for (const n of nodeRows) {
+    if (!nodesByRecord.has(n.recordId)) nodesByRecord.set(n.recordId, []);
+    nodesByRecord.get(n.recordId).push(n);
+  }
+  for (const row of db.prepare('SELECT * FROM records').all()) {
+    const nodes = new Map();
+    for (const n of (nodesByRecord.get(row.id) ?? [])) {
+      nodes.set(n.id, {
+        id: n.id, parentId: n.parentId ?? null,
+        move:     n.move ? JSON.parse(n.move) : null,
+        children: JSON.parse(n.children),
+      });
+    }
+    records.set(row.id, {
+      id: row.id, name: row.name, size: row.size, komi: row.komi,
+      playerBlack: row.playerBlack ?? '', playerWhite: row.playerWhite ?? '',
+      type: 'record', nodes,
+      rootId: row.rootId, currentNodeId: row.currentNodeId,
+      status: 'idle', gtp: null, createdAt: row.createdAt,
+    });
+  }
+  console.log(`[db] loaded ${boards.size} board(s), ${records.size} record(s)`);
+}
 
 // ---- SGF utilities ----
 
@@ -51,8 +186,8 @@ function sgfToGtp(coord, size) {
 }
 
 /**
- * Parse an SGF string into { nodes:Map, rootId, size, komi }.
- * Supports SZ, KM, B, W properties. Handles simple branching.
+ * Parse an SGF string into { nodes:Map, rootId, size, komi, playerBlack, playerWhite }.
+ * Supports SZ, KM, PB, PW, B, W properties. Handles simple branching.
  */
 function parseSGF(sgfText) {
   const GTP_COLS = 'ABCDEFGHJKLMNOPQRST';
@@ -163,7 +298,7 @@ function parseSGF(sgfText) {
 function makeRecord({ name, size, komi: komiOverride, sgf, playerBlack: pbArg, playerWhite: pwArg }) {
   const id = crypto.randomUUID();
   let size_ = parseInt(size) || 19;
-  let komi = 6.5;
+  let komi  = 6.5;
   let playerBlack = pbArg || '';
   let playerWhite = pwArg || '';
 
@@ -203,7 +338,38 @@ function makeRecord({ name, size, komi: komiOverride, sgf, playerBlack: pbArg, p
     createdAt:     new Date().toISOString(),
   };
   records.set(id, record);
+  saveRecord(record);
   return record;
+}
+
+function makeBoard({ name, size, handicap }) {
+  const id       = crypto.randomUUID();
+  size     = parseInt(size)     || 19;
+  handicap = parseInt(handicap) || 0;
+  const komi = handicap >= 2 ? 0.5 : 6.5;
+  const board = {
+    id,
+    name:          name || `対局 ${boards.size + 1}`,
+    size,
+    handicap,
+    komi,
+    status:        'idle',
+    currentPlayer: handicap >= 2 ? 'white' : 'black',
+    moves:         [],
+    stones:        {},
+    lastMove:      null,
+    result:        null,
+    createdAt:     new Date().toISOString(),
+    gtp:           null,
+  };
+  boards.set(id, board);
+  return board;
+}
+
+function boardPublic(b) {
+  const { gtp, ...pub } = b;
+  pub.moveCount = b.moves.length;
+  return pub;
 }
 
 function recordPublic(r) {
@@ -238,36 +404,6 @@ function buildGtpPath(record, nodeId) {
   return path;
 }
 
-function makeBoard({ name, size, handicap }) {
-  const id       = crypto.randomUUID();
-  size     = parseInt(size)     || 19;
-  handicap = parseInt(handicap) || 0;
-  const komi = handicap >= 2 ? 0.5 : 6.5;
-  const board = {
-    id,
-    name:          name || `対局 ${boards.size + 1}`,
-    size,
-    handicap,
-    komi,
-    status:        'idle',       // idle | initializing | playing | ai-thinking | finished | error
-    currentPlayer: handicap >= 2 ? 'white' : 'black',
-    moves:         [],           // [{color:'black'|'white', position:'A1'|'pass'}]
-    stones:        {},           // {'A1': 'black', ...}
-    lastMove:      null,         // GTP position string, or null
-    result:        null,         // string | null
-    createdAt:     new Date().toISOString(),
-    gtp:           null,         // GTPClient – stripped before sending to client
-  };
-  boards.set(id, board);
-  return board;
-}
-
-function boardPublic(b) {
-  const { gtp, ...pub } = b;
-  pub.moveCount = b.moves.length;
-  return pub;
-}
-
 // ---- REST API ----
 
 // List all boards
@@ -279,15 +415,10 @@ app.get('/api/boards', (_req, res) => {
 app.post('/api/boards', (req, res) => {
   const board = makeBoard(req.body);
   board.status = 'initializing';
+  saveBoard(board);
   res.json(boardPublic(board));
 
-  // Start KataGo in the background; broadcast progress via Socket.IO
-  _startKataGo(board).catch(err => {
-    board.status = 'error';
-    board.result = err.message;
-    console.error(`[board ${board.id}] KataGo start failed:`, err.message);
-    io.to(board.id).emit('board', boardPublic(board));
-  });
+  _ensureGtp(board).catch(() => {});
 });
 
 // Get a single board
@@ -303,6 +434,7 @@ app.delete('/api/boards/:id', async (req, res) => {
   if (!b) return res.status(404).json({ error: 'Not found' });
   if (b.gtp) await b.gtp.quit().catch(() => {});
   boards.delete(req.params.id);
+  _stmtDeleteBoard.run(req.params.id);
   res.json({ ok: true });
 });
 
@@ -332,6 +464,7 @@ app.delete('/api/records/:id', async (req, res) => {
   if (!r) return res.status(404).json({ error: 'Not found' });
   if (r.gtp) await r.gtp.quit().catch(() => {});
   records.delete(req.params.id);
+  _stmtDeleteRecord.run(req.params.id);
   res.json({ ok: true });
 });
 
@@ -340,11 +473,96 @@ app.patch('/api/records/:id', (req, res) => {
   if (!r) return res.status(404).json({ error: 'Not found' });
   if (req.body.komi !== undefined) {
     const k = parseFloat(req.body.komi);
-    if (!isNaN(k)) r.komi = k;
+    if (!isNaN(k)) {
+      r.komi = k;
+      _stmtUpdateRecordKomi.run(k, r.id);
+    }
   }
   io.to(r.id).emit('record', recordPublic(r));
   res.json(recordPublic(r));
 });
+
+// ---- KataGo board init / resume ----
+
+// Map<boardId, Promise> – prevents concurrent init for the same board
+const _boardGtpInit = new Map();
+
+/**
+ * Ensure KataGo is running for a board.
+ * - If gtp already exists: no-op.
+ * - If no moves: fresh init (same as original _startKataGo).
+ * - If has moves: replay the saved position (resume after restart).
+ * AI is automatically triggered if it is white's turn after init/replay.
+ */
+async function _ensureGtp(board) {
+  if (board.gtp) return;
+  if (_boardGtpInit.has(board.id)) return _boardGtpInit.get(board.id);
+
+  const p = (async () => {
+    board.status = 'initializing';
+    saveBoard(board);
+    io.to(board.id).emit('board', boardPublic(board));
+
+    const gtp = new GTPClient(KATAGO_BIN, KATAGO_CFG, KATAGO_MDL);
+    board.gtp = gtp;
+    await gtp.start();
+
+    if (board.moves.length === 0) {
+      // ---- Fresh start ----
+      await gtp.initGame(board.size, board.handicap, board.komi);
+      const boardText = await gtp.showBoard();
+      board.stones = _parseBoard(boardText, board.size);
+
+      if (board.handicap >= 2) {
+        board.status        = 'ai-thinking';
+        board.currentPlayer = 'white';
+        saveBoard(board);
+        io.to(board.id).emit('board', boardPublic(board));
+        await _aiMove(board);
+      } else {
+        board.status        = 'playing';
+        board.currentPlayer = 'black';
+        saveBoard(board);
+        io.to(board.id).emit('board', boardPublic(board));
+      }
+    } else {
+      // ---- Resume: replay saved position ----
+      await gtp.send(`boardsize ${board.size}`);
+      await gtp.send('clear_board');
+      if (board.handicap >= 2) await gtp.send(`fixed_handicap ${board.handicap}`);
+      await gtp.send(`komi ${board.komi}`);
+      for (const m of board.moves) await gtp.play(m.color, m.position);
+
+      const boardText = await gtp.showBoard();
+      board.stones = _parseBoard(boardText, board.size);
+
+      if (board.currentPlayer === 'white') {
+        // AI's turn (board was in ai-thinking when server stopped)
+        board.status = 'ai-thinking';
+        saveBoard(board);
+        io.to(board.id).emit('board', boardPublic(board));
+        await _aiMove(board);
+      } else {
+        board.status = 'playing';
+        saveBoard(board);
+        io.to(board.id).emit('board', boardPublic(board));
+      }
+    }
+  })();
+
+  _boardGtpInit.set(board.id, p);
+  p.catch(err => {
+    board.gtp    = null;
+    board.status = 'error';
+    board.result = err.message;
+    console.error(`[board ${board.id}] KataGo init failed:`, err.message);
+    saveBoard(board);
+    io.to(board.id).emit('board', boardPublic(board));
+  }).finally(() => {
+    _boardGtpInit.delete(board.id);
+  });
+  return p;
+}
 
 // ---- Socket.IO ----
 io.on('connection', socket => {
@@ -356,7 +574,15 @@ io.on('connection', socket => {
     currentRoom = id;
     socket.join(id);
     const b = boards.get(id);
-    if (b) socket.emit('board', boardPublic(b));
+    if (!b) return;
+    socket.emit('board', boardPublic(b));
+
+    // Auto-resume KataGo for boards that need immediate action:
+    // - 'idle': interrupted before KataGo ever started
+    // - 'ai-thinking': AI was mid-move when server stopped
+    if (!b.gtp && (b.status === 'idle' || b.status === 'ai-thinking')) {
+      _ensureGtp(b).catch(() => {});
+    }
   });
 
   // Player move
@@ -368,6 +594,7 @@ io.on('connection', socket => {
       return;
     }
     try {
+      await _ensureGtp(b);
       if (b.gtp?.isAnalyzing) await b.gtp.stopAnalysis().catch(() => {});
       await b.gtp.play('black', position);
       b.stones          = _parseBoard(await b.gtp.showBoard(), b.size);
@@ -375,6 +602,7 @@ io.on('connection', socket => {
       b.lastMove        = position;
       b.currentPlayer   = 'white';
       b.status          = 'ai-thinking';
+      saveBoard(b);
       io.to(boardId).emit('board', boardPublic(b));
       await _aiMove(b);
     } catch (e) {
@@ -387,12 +615,14 @@ io.on('connection', socket => {
     const b = boards.get(boardId);
     if (!b || (b.status !== 'playing' && b.status !== 'analyzing') || b.currentPlayer !== 'black') return;
     try {
+      await _ensureGtp(b);
       if (b.gtp?.isAnalyzing) await b.gtp.stopAnalysis().catch(() => {});
       await b.gtp.play('black', 'pass');
       b.moves.push({ color: 'black', position: 'pass' });
       b.lastMove      = null;
       b.currentPlayer = 'white';
       b.status        = 'ai-thinking';
+      saveBoard(b);
       io.to(boardId).emit('board', boardPublic(b));
       await _aiMove(b);
     } catch (e) {
@@ -407,20 +637,29 @@ io.on('connection', socket => {
     if (b.gtp?.isAnalyzing) await b.gtp.stopAnalysis().catch(() => {});
     b.status = 'finished';
     b.result = '投了 – KataGo（白）の勝ち';
+    saveBoard(b);
     io.to(boardId).emit('board', boardPublic(b));
   });
 
   // Start kata-analyze streaming
-  socket.on('start-analysis', boardId => {
+  socket.on('start-analysis', async boardId => {
     const b = boards.get(boardId);
-    if (!b || !b.gtp || b.status !== 'playing' || b.currentPlayer !== 'black') {
+    if (!b || b.status !== 'playing' || b.currentPlayer !== 'black') {
       socket.emit('err', '分析できる状態ではありません');
       return;
     }
+    try {
+      await _ensureGtp(b);
+    } catch {
+      return;
+    }
+    if (b.status !== 'playing' || b.currentPlayer !== 'black') return;
+
     b.status = 'analyzing';
+    saveBoard(b);
     io.to(boardId).emit('board', boardPublic(b));
 
-    const accCandidates = new Map(); // move → candidate (累積)
+    const accCandidates = new Map();
     b.gtp.startAnalysis(20, lines => {
       for (const c of lines.map(_parseAnalysisLine)) {
         if (c.move && c.move.toLowerCase() !== 'pass') accCandidates.set(c.move, c);
@@ -440,6 +679,7 @@ io.on('connection', socket => {
     if (!b || !b.gtp) return;
     await b.gtp.stopAnalysis().catch(() => {});
     b.status = 'playing';
+    saveBoard(b);
     io.to(boardId).emit('board', boardPublic(b));
   });
 
@@ -459,6 +699,7 @@ io.on('connection', socket => {
     if (r.gtp?.isAnalyzing) r.gtp.stopAnalysis().catch(() => {});
     r.currentNodeId = nodeId;
     r.status = 'idle';
+    _stmtUpdateRecordCurrent.run(nodeId, recordId);
     io.to(recordId).emit('record', recordPublic(r));
   });
 
@@ -472,15 +713,29 @@ io.on('connection', socket => {
       const child = r.nodes.get(childId);
       if (child && child.move && child.move.color === color && child.move.pos === pos) {
         r.currentNodeId = childId;
+        _stmtUpdateRecordCurrent.run(childId, recordId);
         io.to(recordId).emit('record', recordPublic(r));
         return;
       }
     }
     // Create new child node
-    const newId = crypto.randomUUID();
-    r.nodes.set(newId, { id: newId, parentId: r.currentNodeId, move: { color, pos }, children: [] });
+    const parentNodeId = r.currentNodeId;  // save before update
+    const newId   = crypto.randomUUID();
+    const newNode = { id: newId, parentId: parentNodeId, move: { color, pos }, children: [] };
+    r.nodes.set(newId, newNode);
     curNode.children.push(newId);
     r.currentNodeId = newId;
+    // Persist: new node + updated parent children + new currentNodeId
+    db.transaction(() => {
+      _stmtUpsertNode.run({
+        id: newId, recordId,
+        parentId: parentNodeId,
+        move: JSON.stringify({ color, pos }),
+        children: '[]',
+      });
+      _stmtUpdateNodeChildren.run(JSON.stringify(curNode.children), curNode.id);
+      _stmtUpdateRecordCurrent.run(newId, recordId);
+    })();
     io.to(recordId).emit('record', recordPublic(r));
   });
 
@@ -556,35 +811,13 @@ io.on('connection', socket => {
 
 // ---- Game logic ----
 
-async function _startKataGo(board) {
-  const gtp = new GTPClient(KATAGO_BIN, KATAGO_CFG, KATAGO_MDL);
-  board.gtp = gtp;
-
-  await gtp.start();
-  await gtp.initGame(board.size, board.handicap, board.komi);
-
-  const boardText  = await gtp.showBoard();
-  board.stones     = _parseBoard(boardText, board.size);
-
-  if (board.handicap >= 2) {
-    // With handicap, white (KataGo) moves first
-    board.status        = 'ai-thinking';
-    board.currentPlayer = 'white';
-    io.to(board.id).emit('board', boardPublic(board));
-    await _aiMove(board);
-  } else {
-    board.status        = 'playing';
-    board.currentPlayer = 'black';
-    io.to(board.id).emit('board', boardPublic(board));
-  }
-}
-
 async function _aiMove(board) {
   const pos = await board.gtp.genMove('white');
 
   if (pos.toLowerCase() === 'resign') {
     board.status = 'finished';
     board.result = 'KataGo が投了 – あなた（黒）の勝ち';
+    saveBoard(board);
     io.to(board.id).emit('board', boardPublic(board));
     return;
   }
@@ -608,6 +841,7 @@ async function _aiMove(board) {
     board.status = 'playing';
   }
 
+  saveBoard(board);
   io.to(board.id).emit('board', boardPublic(board));
 }
 
@@ -667,6 +901,7 @@ process.on('SIGINT', async () => {
   for (const r of records.values()) {
     if (r.gtp) await r.gtp.quit().catch(() => {});
   }
+  db.close();
   process.exit(0);
 });
 
