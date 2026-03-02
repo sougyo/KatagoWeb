@@ -4,20 +4,20 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:          #1c1c1c;
-  --surface:     #252525;
-  --surface2:    #2e2e2e;
-  --border:      #3a3a3a;
-  --text:        #e0e0e0;
-  --text-muted:  #888;
-  --accent:      #5bba6f;
-  --accent-dark: #469956;
-  --warning:     #f0933a;
-  --danger:      #e05555;
+  --bg:          #f3f4f6;
+  --surface:     #ffffff;
+  --surface2:    #eef0f3;
+  --border:      #dde0e6;
+  --text:        #1a1a2e;
+  --text-muted:  #6b7280;
+  --accent:      #3a9e52;
+  --accent-dark: #2d8040;
+  --warning:     #d97706;
+  --danger:      #dc2626;
   --board:       #DCA94E;
   --board-dark:  #b8892a;
   --radius:      8px;
-  --shadow:      0 2px 12px rgba(0,0,0,.4);
+  --shadow:      0 2px 12px rgba(0,0,0,.10);
 }
 
 html, body {
@@ -133,11 +133,11 @@ html, body {
   color: var(--text-muted);
   border: 1px solid var(--border);
 }
-.badge-playing      { background: #1e4b2e; color: #6de88b; border-color: #2e7a44; }
-.badge-ai-thinking  { background: #3b2c00; color: #ffbb55; border-color: #6b4f00; }
-.badge-initializing { background: #1a2840; color: #6ab0f5; border-color: #2a4870; }
-.badge-finished     { background: #2a2a2a; color: #888;    border-color: #444; }
-.badge-error        { background: #3a1515; color: #f08080; border-color: #6a2020; }
+.badge-playing      { background: #e8f5ec; color: #2d7a44; border-color: #a3d4b0; }
+.badge-ai-thinking  { background: #fff8e1; color: #a06000; border-color: #f0c870; }
+.badge-initializing { background: #e3f0fd; color: #1a6ac0; border-color: #90c0f0; }
+.badge-finished     { background: #f0f1f3; color: #6b7280; border-color: #dde0e6; }
+.badge-error        { background: #fde8e8; color: #c02020; border-color: #f0a0a0; }
 
 .card-footer {
   display: flex;
@@ -159,7 +159,7 @@ html, body {
   font-size: .85rem;
   transition: color .15s, background .15s;
 }
-.btn-delete:hover { color: var(--danger); background: rgba(224,85,85,.12); }
+.btn-delete:hover { color: var(--danger); background: rgba(220,38,38,.1); }
 
 /* ============================================================
    Empty state
@@ -212,11 +212,11 @@ html, body {
   border: 1px solid var(--border);
   white-space: nowrap;
 }
-.status-your-turn { background: #1b3b24; color: #6de88b; border-color: #2e6b3e; }
-.status-ai        { background: #2a2a2a; color: #888; }
-.status-thinking  { background: #3b2c00; color: #ffbb55; border-color: #6b4f00; }
-.status-finished  { background: #2a2020; color: #f08080; border-color: #5a3535; }
-.status-error     { background: #3a1515; color: #f08080; border-color: #6a2020; }
+.status-your-turn { background: #e8f5ec; color: #2d7a44; border-color: #a3d4b0; }
+.status-ai        { background: #f0f1f3; color: #6b7280; border-color: #dde0e6; }
+.status-thinking  { background: #fff8e1; color: #a06000; border-color: #f0c870; }
+.status-finished  { background: #fde8e8; color: #c02020; border-color: #f0a0a0; }
+.status-error     { background: #fde8e8; color: #c02020; border-color: #f0a0a0; }
 
 /* ============================================================
    Game view – layout
@@ -258,6 +258,7 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 0;
+  background: var(--surface);
 }
 
 @media (min-width: 700px) {
@@ -380,8 +381,8 @@ html, body {
   color: var(--text-muted);
   font-family: 'Consolas', 'Courier New', monospace;
 }
-.move-item.black { color: #bbb; }
-.move-item.white { color: #888; }
+.move-item.black { color: #1a1a1a; }
+.move-item.white { color: #6b7280; }
 
 /* ============================================================
    Modal
@@ -389,7 +390,7 @@ html, body {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,.65);
+  background: rgba(0,0,0,.35);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -405,7 +406,7 @@ html, body {
   padding: 28px 32px;
   width: 100%;
   max-width: 420px;
-  box-shadow: 0 8px 40px rgba(0,0,0,.6);
+  box-shadow: 0 8px 40px rgba(0,0,0,.15);
 }
 .modal-title {
   font-size: 1.2rem;
@@ -482,9 +483,9 @@ html, body {
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%) translateY(16px);
-  background: var(--surface2);
+  background: var(--text);
   border: 1px solid var(--border);
-  color: var(--text);
+  color: var(--surface);
   padding: 10px 20px;
   border-radius: 8px;
   font-size: .88rem;
@@ -499,23 +500,23 @@ html, body {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
-#toast.toast-error { border-color: var(--danger); color: #f08080; }
+#toast.toast-error { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 /* ============================================================
    Analyze button
    ============================================================ */
 .btn-analyze {
-  background: #1e3a5f;
-  color: #7ec8f5;
-  border: 1px solid #2a5080;
+  background: #e3f0fd;
+  color: #1a6ac0;
+  border: 1px solid #90c0f0;
 }
-.btn-analyze:hover { background: #254a78; }
+.btn-analyze:hover { background: #d0e8fb; }
 .btn-analyze-active {
-  background: #1a4a3a;
-  color: #6de8b0;
-  border-color: #2a7055;
+  background: #e0f5ee;
+  color: #1a7050;
+  border-color: #80d0b0;
 }
-.btn-analyze-active:hover { background: #1f5a46; }
+.btn-analyze-active:hover { background: #ccefe6; }
 
 /* ============================================================
    Analysis panel (win-rate bar + score)
@@ -545,8 +546,8 @@ html, body {
   transition: width .25s ease;
   height: 100%;
 }
-.wr-b { background: #333; }
-.wr-w { background: #e0e0e0; }
+.wr-b { background: #222; }
+.wr-w { background: #d0d0d0; }
 
 .wr-text {
   margin-top: 5px;
@@ -561,8 +562,8 @@ html, body {
 }
 
 /* Status badge */
-.status-analyzing { background: #1e3a5f; color: #7ec8f5; border-color: #2a5080; }
-.badge-analyzing  { background: #1e3a5f; color: #7ec8f5; border-color: #2a5080; }
+.status-analyzing { background: #e3f0fd; color: #1a6ac0; border-color: #90c0f0; }
+.badge-analyzing  { background: #e3f0fd; color: #1a6ac0; border-color: #90c0f0; }
 
 /* ============================================================
    Header buttons (list view)
@@ -577,11 +578,11 @@ html, body {
    Secondary button
    ============================================================ */
 .btn-secondary {
-  background: #3a3a6a;
-  color: #a0a0f0;
-  border: 1px solid #5050a0;
+  background: #eeeeff;
+  color: #5050c0;
+  border: 1px solid #c0c0e8;
 }
-.btn-secondary:hover { background: #4a4a80; }
+.btn-secondary:hover { background: #e0e0f8; }
 
 /* ============================================================
    Tab buttons (record modal)
@@ -629,13 +630,13 @@ html, body {
    Move tree (record view)
    ============================================================ */
 .move-item.current {
-  background: #1e3b24;
-  color: #6de88b;
+  background: #e8f5ec;
+  color: #2d7a44;
   border-radius: 3px;
 }
 .branch-option {
   padding-left: 28px;
-  color: #6ab0f5;
+  color: #1a6ac0;
   cursor: pointer;
 }
 .branch-option:hover { background: var(--surface2); }
@@ -651,7 +652,7 @@ html, body {
 /* ============================================================
    Badge – record type
    ============================================================ */
-.badge-record { background: #2a1e4a; color: #a080f0; border-color: #5040a0; }
+.badge-record { background: #f0eeff; color: #6040c0; border-color: #c0b0f0; }
 
 /* ============================================================
    SVG board – cursor
@@ -664,4 +665,4 @@ html, body {
 ::-webkit-scrollbar               { width: 6px; }
 ::-webkit-scrollbar-track         { background: var(--surface); }
 ::-webkit-scrollbar-thumb         { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover   { background: #555; }
+::-webkit-scrollbar-thumb:hover   { background: #bbb; }
