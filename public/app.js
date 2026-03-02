@@ -158,10 +158,10 @@ function xyToGtp(x, y, N) {
 // ============================================================
 
 function computeStones(nodes, rootId, nodeId, size) {
-  // Build path from root to nodeId
+  // Build path from root (inclusive) to nodeId
   const path = [];
   let cur = nodeId;
-  while (cur && cur !== rootId) {
+  while (cur) {
     const node = nodes[cur];
     if (!node) break;
     path.unshift(node);
@@ -169,6 +169,12 @@ function computeStones(nodes, rootId, nodeId, size) {
   }
   const board = new GoBoard(size);
   for (const node of path) {
+    // Apply setup stones (AB / AW / AE) before the move of this node
+    if (node.setup) {
+      for (const pos of (node.setup.black ?? [])) board.stones[pos] = 'black';
+      for (const pos of (node.setup.white ?? [])) board.stones[pos] = 'white';
+      for (const pos of (node.setup.empty ?? [])) delete board.stones[pos];
+    }
     if (node.move) board.play(node.move.color, node.move.pos);
   }
   return board.stones;
@@ -187,16 +193,23 @@ function getMoveNumber(nodes, nodeId) {
 }
 
 function getNextColor(nodes, nodeId) {
-  let blackCount = 0, whiteCount = 0;
+  let blackMoves = 0, whiteMoves = 0;
+  let hasBlackSetup = false;
   let cur = nodeId;
   while (cur) {
     const node = nodes[cur];
     if (!node) break;
-    if (node.move?.color === 'black') blackCount++;
-    if (node.move?.color === 'white') whiteCount++;
+    if (node.setup?.black?.length) hasBlackSetup = true;
+    if (node.move?.color === 'black') blackMoves++;
+    if (node.move?.color === 'white') whiteMoves++;
     cur = node.parentId;
   }
-  return blackCount <= whiteCount ? 'black' : 'white';
+  // Handicap game (AB setup stones present): white moves first after setup.
+  // Normal game: black moves first.
+  if (hasBlackSetup) {
+    return whiteMoves <= blackMoves ? 'white' : 'black';
+  }
+  return blackMoves <= whiteMoves ? 'black' : 'white';
 }
 
 function getPath(nodes, nodeId) {

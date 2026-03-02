@@ -64,6 +64,8 @@ db.exec(`
     FOREIGN KEY (recordId) REFERENCES records(id) ON DELETE CASCADE
   );
 `);
+// Migration: add setup column to record_nodes if it doesn't exist yet
+try { db.exec('ALTER TABLE record_nodes ADD COLUMN setup TEXT'); } catch (_) {}
 
 // Prepared statements
 const _stmtUpsertBoard = db.prepare(`
@@ -92,8 +94,8 @@ const _stmtUpsertRecord = db.prepare(`
     (@id, @name, @size, @komi, @playerBlack, @playerWhite, @rootId, @currentNodeId, @createdAt)
 `);
 const _stmtUpsertNode = db.prepare(`
-  INSERT OR REPLACE INTO record_nodes (id, recordId, parentId, move, children)
-  VALUES (@id, @recordId, @parentId, @move, @children)
+  INSERT OR REPLACE INTO record_nodes (id, recordId, parentId, move, setup, children)
+  VALUES (@id, @recordId, @parentId, @move, @setup, @children)
 `);
 const _stmtUpdateNodeChildren    = db.prepare('UPDATE record_nodes SET children = ? WHERE id = ?');
 const _stmtUpdateRecordCurrent   = db.prepare('UPDATE records SET currentNodeId = ? WHERE id = ?');
@@ -111,7 +113,8 @@ function saveRecord(r) {
       _stmtUpsertNode.run({
         id: node.id, recordId: r.id,
         parentId: node.parentId ?? null,
-        move:     node.move ? JSON.stringify(node.move) : null,
+        move:     node.move  ? JSON.stringify(node.move)  : null,
+        setup:    node.setup ? JSON.stringify(node.setup) : null,
         children: JSON.stringify(node.children),
       });
     }
@@ -156,7 +159,8 @@ const records = new Map();  // Map<id, Record>
     for (const n of (nodesByRecord.get(row.id) ?? [])) {
       nodes.set(n.id, {
         id: n.id, parentId: n.parentId ?? null,
-        move:     n.move ? JSON.parse(n.move) : null,
+        move:     n.move  ? JSON.parse(n.move)  : null,
+        setup:    n.setup ? JSON.parse(n.setup) : null,
         children: JSON.parse(n.children),
       });
     }
@@ -229,7 +233,8 @@ function parseSGF(sgfText) {
     // node: ';' followed by properties
     if (text[pos] !== ';') return null;
     pos++;
-    let move = null;
+    let move  = null;
+    let setup = null;
     while (pos < text.length) {
       skipWS();
       if (text[pos] === ';' || text[pos] === '(' || text[pos] === ')') break;
@@ -261,8 +266,22 @@ function parseSGF(sgfText) {
         const gtp = coord === '' ? 'pass' : sgfToGtp(coord, size);
         if (gtp) move = { color: key === 'B' ? 'black' : 'white', pos: gtp };
       }
+      // Setup stones: AB (Add Black), AW (Add White), AE (Add Empty)
+      if (key === 'AB' || key === 'AW' || key === 'AE') {
+        const field = key === 'AB' ? 'black' : key === 'AW' ? 'white' : 'empty';
+        for (const v of vals) {
+          const gtp = sgfToGtp(v, size);
+          if (gtp) {
+            if (!setup) setup = {};
+            if (!setup[field]) setup[field] = [];
+            setup[field].push(gtp);
+          }
+        }
+      }
     }
-    return mkNode(parentId, move);
+    const nodeId = mkNode(parentId, move);
+    if (setup) nodes.get(nodeId).setup = setup;
+    return nodeId;
   }
 
   function parseSequence(parentId) {
@@ -391,17 +410,27 @@ function recordPublic(r) {
   };
 }
 
-/** Returns array of move objects [{color, pos}] from root to nodeId (excluding root's null move). */
+/**
+ * Returns array of {color, pos} steps from root to nodeId.
+ * Includes AB/AW setup stones (as individual play steps) and regular moves.
+ */
 function buildGtpPath(record, nodeId) {
-  const path = [];
+  const steps = [];
   let cur = nodeId;
-  while (cur && cur !== record.rootId) {
+  while (cur) {
     const node = record.nodes.get(cur);
     if (!node) break;
-    if (node.move) path.unshift(node.move);
+    const nodeSteps = [];
+    if (node.setup) {
+      for (const pos of (node.setup.black ?? [])) nodeSteps.push({ color: 'black', pos });
+      for (const pos of (node.setup.white ?? [])) nodeSteps.push({ color: 'white', pos });
+      // AE (remove stones) cannot be expressed as a GTP play command; skip for replay
+    }
+    if (node.move) nodeSteps.push(node.move);
+    steps.unshift(...nodeSteps);
     cur = node.parentId;
   }
-  return path;
+  return steps;
 }
 
 // ---- REST API ----
