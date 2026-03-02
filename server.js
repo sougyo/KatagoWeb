@@ -102,6 +102,16 @@ const _stmtUpdateRecordCurrent   = db.prepare('UPDATE records SET currentNodeId 
 const _stmtUpdateRecordKomi      = db.prepare('UPDATE records SET komi = ? WHERE id = ?');
 const _stmtDeleteRecord          = db.prepare('DELETE FROM records WHERE id = ?');
 
+// ---- Analysis timeout ----
+const ANALYSIS_TIMEOUT_MS = 60_000; // auto-stop analysis after 1 minute
+
+function _clearAnalysisTimer(obj) {
+  if (obj._analysisTimer) {
+    clearTimeout(obj._analysisTimer);
+    obj._analysisTimer = null;
+  }
+}
+
 function saveRecord(r) {
   db.transaction(() => {
     _stmtUpsertRecord.run({
@@ -624,7 +634,7 @@ io.on('connection', socket => {
     }
     try {
       await _ensureGtp(b);
-      if (b.gtp?.isAnalyzing) await b.gtp.stopAnalysis().catch(() => {});
+      if (b.gtp?.isAnalyzing) { _clearAnalysisTimer(b); await b.gtp.stopAnalysis().catch(() => {}); }
       await b.gtp.play('black', position);
       b.stones          = _parseBoard(await b.gtp.showBoard(), b.size);
       b.moves.push({ color: 'black', position });
@@ -645,7 +655,7 @@ io.on('connection', socket => {
     if (!b || (b.status !== 'playing' && b.status !== 'analyzing') || b.currentPlayer !== 'black') return;
     try {
       await _ensureGtp(b);
-      if (b.gtp?.isAnalyzing) await b.gtp.stopAnalysis().catch(() => {});
+      if (b.gtp?.isAnalyzing) { _clearAnalysisTimer(b); await b.gtp.stopAnalysis().catch(() => {}); }
       await b.gtp.play('black', 'pass');
       b.moves.push({ color: 'black', position: 'pass' });
       b.lastMove      = null;
@@ -663,7 +673,7 @@ io.on('connection', socket => {
   socket.on('resign', async boardId => {
     const b = boards.get(boardId);
     if (!b || b.status === 'finished') return;
-    if (b.gtp?.isAnalyzing) await b.gtp.stopAnalysis().catch(() => {});
+    if (b.gtp?.isAnalyzing) { _clearAnalysisTimer(b); await b.gtp.stopAnalysis().catch(() => {}); }
     b.status = 'finished';
     b.result = '投了 – KataGo（白）の勝ち';
     saveBoard(b);
@@ -688,6 +698,15 @@ io.on('connection', socket => {
     saveBoard(b);
     io.to(boardId).emit('board', boardPublic(b));
 
+    _clearAnalysisTimer(b);
+    b._analysisTimer = setTimeout(async () => {
+      if (!b.gtp?.isAnalyzing) return;
+      await b.gtp.stopAnalysis().catch(() => {});
+      b.status = 'playing';
+      saveBoard(b);
+      io.to(boardId).emit('board', boardPublic(b));
+    }, ANALYSIS_TIMEOUT_MS);
+
     const accCandidates = new Map();
     b.gtp.startAnalysis(20, lines => {
       for (const c of lines.map(_parseAnalysisLine)) {
@@ -706,6 +725,7 @@ io.on('connection', socket => {
   socket.on('stop-analysis', async boardId => {
     const b = boards.get(boardId);
     if (!b || !b.gtp) return;
+    _clearAnalysisTimer(b);
     await b.gtp.stopAnalysis().catch(() => {});
     b.status = 'playing';
     saveBoard(b);
@@ -725,7 +745,7 @@ io.on('connection', socket => {
   socket.on('record-navigate', ({ recordId, nodeId }) => {
     const r = records.get(recordId);
     if (!r || !r.nodes.has(nodeId)) return;
-    if (r.gtp?.isAnalyzing) r.gtp.stopAnalysis().catch(() => {});
+    if (r.gtp?.isAnalyzing) { _clearAnalysisTimer(r); r.gtp.stopAnalysis().catch(() => {}); }
     r.currentNodeId = nodeId;
     r.status = 'idle';
     _stmtUpdateRecordCurrent.run(nodeId, recordId);
@@ -811,6 +831,14 @@ io.on('connection', socket => {
       r.status = 'analyzing';
       io.to(recordId).emit('record', recordPublic(r));
 
+      _clearAnalysisTimer(r);
+      r._analysisTimer = setTimeout(async () => {
+        if (!r.gtp?.isAnalyzing) return;
+        await r.gtp.stopAnalysis().catch(() => {});
+        r.status = 'idle';
+        io.to(recordId).emit('record', recordPublic(r));
+      }, ANALYSIS_TIMEOUT_MS);
+
       const accCandidates = new Map();
       gtp.startAnalysis(20, lines => {
         for (const c of lines.map(_parseAnalysisLine)) {
@@ -832,6 +860,7 @@ io.on('connection', socket => {
   socket.on('record-stop-analysis', async recordId => {
     const r = records.get(recordId);
     if (!r || !r.gtp) return;
+    _clearAnalysisTimer(r);
     await r.gtp.stopAnalysis().catch(() => {});
     r.status = 'idle';
     io.to(recordId).emit('record', recordPublic(r));
