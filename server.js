@@ -435,6 +435,22 @@ function recordPublic(r) {
  * Returns array of {color, pos} steps from root to nodeId.
  * Includes AB/AW setup stones (as individual play steps) and regular moves.
  */
+/** Returns the color that is next to move at nodeId (mirrors client-side getNextColor). */
+function _getNextColor(record, nodeId) {
+  let blackMoves = 0, whiteMoves = 0, hasBlackSetup = false;
+  let cur = nodeId;
+  while (cur) {
+    const node = record.nodes.get(cur);
+    if (!node) break;
+    if (node.setup?.black?.length) hasBlackSetup = true;
+    if (node.move?.color === 'black') blackMoves++;
+    if (node.move?.color === 'white') whiteMoves++;
+    cur = node.parentId;
+  }
+  if (hasBlackSetup) return whiteMoves <= blackMoves ? 'white' : 'black';
+  return blackMoves <= whiteMoves ? 'black' : 'white';
+}
+
 function buildGtpPath(record, nodeId) {
   const steps = [];
   let cur = nodeId;
@@ -953,10 +969,19 @@ io.on('connection', socket => {
         io.to(recordId).emit('record', recordPublic(r));
       }, ANALYSIS_TIMEOUT_MS);
 
+      // kata-analyze returns winrate/scoreMean from the current player's perspective.
+      // Normalize to always be from black's perspective.
+      const isWhiteToMove = _getNextColor(r, r.currentNodeId) === 'white';
+      const toBlackPov = c => isWhiteToMove
+        ? { ...c,
+            winrate:   c.winrate   != null ? 1 - c.winrate   : c.winrate,
+            scoreMean: c.scoreMean != null ? -c.scoreMean     : c.scoreMean }
+        : c;
+
       const accCandidates = new Map();
       gtp.startAnalysis(20, lines => {
         for (const c of lines.map(_parseAnalysisLine)) {
-          if (c.move && c.move.toLowerCase() !== 'pass') accCandidates.set(c.move, c);
+          if (c.move && c.move.toLowerCase() !== 'pass') accCandidates.set(c.move, toBlackPov(c));
         }
         const candidates = [...accCandidates.values()]
           .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
