@@ -48,6 +48,12 @@
           <button id="btn-resign"  class="btn btn-danger"  disabled>投了</button>
           <button id="btn-analyze" class="btn btn-analyze" hidden>分析</button>
         </div>
+        <div class="sidebar-option">
+          <label class="option-label">
+            <input type="checkbox" id="chk-two-tap">
+            2タップ確認
+          </label>
+        </div>
         <div class="sidebar-controls" id="review-controls" hidden>
           <button id="btn-to-record" class="btn btn-secondary" style="width:100%">棋譜で確認・解析</button>
         </div>
@@ -108,6 +114,12 @@
         <div class="sidebar-controls">
           <button id="btn-rec-pass"    class="btn btn-warning" style="display:none">パス</button>
           <button id="btn-rec-analyze" class="btn btn-analyze">分析</button>
+        </div>
+        <div class="sidebar-option">
+          <label class="option-label">
+            <input type="checkbox" id="chk-rec-two-tap">
+            2タップ確認
+          </label>
         </div>
         <div id="rec-analysis-panel" class="analysis-panel hidden">
           <div class="wr-label">勝率（黒）</div>

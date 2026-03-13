@@ -122,6 +122,8 @@ const state = {
   currentRecordId: null,
   currentRecord:   null,
   recordAnalysis:  null,
+  pendingPos:      null,   // 2タップ確認モード: 仮置き位置
+  recPendingPos:   null,   // 棋譜ビュー用
 };
 
 const socket = io();
@@ -244,6 +246,8 @@ function getLastDescendant(nodes, nodeId) {
 function showListView() {
   state.currentBoardId  = null;
   state.currentRecordId = null;
+  state.pendingPos      = null;
+  state.recPendingPos   = null;
   document.getElementById('view-list').classList.remove('hidden');
   document.getElementById('view-game').classList.add('hidden');
   document.getElementById('view-record').classList.add('hidden');
@@ -692,6 +696,19 @@ function buildBoardSvg(board, candidates = null) {
     });
     svg.appendChild(ghost);
 
+    // Pending stone: shown when 2-tap mode is active and a position is tentatively selected
+    if (state.pendingPos) {
+      const pxy = gtpToXY(state.pendingPos, N);
+      if (pxy) {
+        svg.appendChild(svgEl('circle', {
+          cx: pxy.x, cy: pxy.y, r: '0.44',
+          fill: 'rgba(0,0,0,0.55)',
+          stroke: '#ff0', 'stroke-width': '0.10',
+          'pointer-events': 'none',
+        }));
+      }
+    }
+
     // Transparent click targets at every empty intersection
     for (let rv = 0; rv < N; rv++) {
       for (let cv = 0; cv < N; cv++) {
@@ -725,10 +742,32 @@ function buildBoardSvg(board, candidates = null) {
       ghost.setAttribute('visibility', 'hidden')
     );
 
-    // Click → optimistic update then send move
+    // Click → optimistic update then send move (with optional 2-tap confirmation)
     svg.addEventListener('click', e => {
       if (!e.target.classList.contains('hit')) return;
       const pos = e.target.getAttribute('data-pos');
+      const twoTap = document.getElementById('chk-two-tap')?.checked;
+
+      if (twoTap) {
+        if (state.pendingPos === pos) {
+          // 2回目のタップ → 着手確定
+          state.pendingPos = null;
+          state.analysisData = null;
+          renderGame({
+            ...board,
+            stones:        { ...board.stones, [pos]: 'black' },
+            lastMove:      pos,
+            currentPlayer: 'white',
+            status:        'ai-thinking',
+          });
+          socket.emit('move', { boardId: state.currentBoardId, position: pos });
+        } else {
+          // 1回目のタップ（または別の場所をタップ）→ 仮置き
+          state.pendingPos = pos;
+          renderGame({ ...board });
+        }
+        return;
+      }
 
       state.analysisData = null; // 着手と同時に解析結果を消去
 
@@ -928,8 +967,23 @@ function buildRecordBoardSvg(record, stones, lastMove, nextColor, candidates = n
   }
 
   // Click layer: clicking places a stone
-  const ghost = svgEl('circle', { r: '0.44', fill: nextColor === 'black' ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.4)', 'pointer-events': 'none', visibility: 'hidden' });
+  const ghostFill = nextColor === 'black' ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.4)';
+  const ghost = svgEl('circle', { r: '0.44', fill: ghostFill, 'pointer-events': 'none', visibility: 'hidden' });
   svg.appendChild(ghost);
+
+  // Pending stone for 2-tap mode
+  if (state.recPendingPos) {
+    const pxy = gtpToXY(state.recPendingPos, N);
+    if (pxy) {
+      const pendFill = nextColor === 'black' ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.7)';
+      svg.appendChild(svgEl('circle', {
+        cx: pxy.x, cy: pxy.y, r: '0.44',
+        fill: pendFill,
+        stroke: '#ff0', 'stroke-width': '0.10',
+        'pointer-events': 'none',
+      }));
+    }
+  }
 
   for (let rv = 0; rv < N; rv++) {
     for (let cv = 0; cv < N; cv++) {
@@ -955,6 +1009,23 @@ function buildRecordBoardSvg(record, stones, lastMove, nextColor, candidates = n
   svg.addEventListener('click', e => {
     if (!e.target.classList.contains('hit')) return;
     const pos = e.target.getAttribute('data-pos');
+    const twoTap = document.getElementById('chk-rec-two-tap')?.checked;
+
+    if (twoTap) {
+      if (state.recPendingPos === pos) {
+        // 2回目のタップ → 着手確定
+        state.recPendingPos = null;
+        state.recordAnalysis = null;
+        socket.emit('record-add-move', { recordId: state.currentRecordId, color: nextColor, pos });
+      } else {
+        // 1回目のタップ（または別の場所をタップ）→ 仮置き
+        state.recPendingPos = pos;
+        const rec = state.currentRecord;
+        if (rec) renderRecord(rec);
+      }
+      return;
+    }
+
     state.recordAnalysis = null;
     socket.emit('record-add-move', { recordId: state.currentRecordId, color: nextColor, pos });
   });
@@ -1026,7 +1097,10 @@ socket.on('board', board => {
   if (board.id !== state.currentBoardId) return;
   // 着手（手数が増えた）タイミングで解析結果を消す。停止だけなら残す。
   const prevLen = state.currentBoard?.moves?.length ?? -1;
-  if (board.moves.length > prevLen) state.analysisData = null;
+  if (board.moves.length > prevLen) {
+    state.analysisData = null;
+    state.pendingPos = null; // サーバーから着手確認 → 仮置きを解除
+  }
   state.currentBoard = board;
   renderGame(board);
 });
@@ -1063,6 +1137,8 @@ socket.on('connect', () => {
 
 socket.on('record', record => {
   if (record.id !== state.currentRecordId) return;
+  const prevNodeId = state.currentRecord?.currentNodeId;
+  if (record.currentNodeId !== prevNodeId) state.recPendingPos = null;
   state.currentRecord = record;
   renderRecord(record);
 });
@@ -1531,6 +1607,20 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       state.recordAnalysis = null;
       socket.emit('record-start-analysis', state.currentRecordId);
+    }
+  });
+
+  // 2タップ確認チェックボックス: OFF時は仮置きをキャンセル
+  document.getElementById('chk-two-tap').addEventListener('change', e => {
+    if (!e.target.checked) {
+      state.pendingPos = null;
+      if (state.currentBoard) renderGame(state.currentBoard);
+    }
+  });
+  document.getElementById('chk-rec-two-tap').addEventListener('change', e => {
+    if (!e.target.checked) {
+      state.recPendingPos = null;
+      if (state.currentRecord) renderRecord(state.currentRecord);
     }
   });
 

@@ -354,6 +354,25 @@ html, body {
   padding: 7px 8px;
 }
 
+.sidebar-option {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.option-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .82rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.option-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
 .sidebar-history {
   flex: 1;
   overflow-y: auto;
