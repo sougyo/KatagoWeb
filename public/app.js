@@ -1401,10 +1401,16 @@ function renderWinrateGraph(containerId, entries, currentIndex, totalMoves) {
   wrap.classList.remove('hidden');
   wrap.innerHTML = '';
 
+  const curEntry = entries.find(e => e.index === currentIndex);
+
   if (hasWr) {
     const lbl = document.createElement('div');
     lbl.className = 'wr-graph-label';
-    lbl.textContent = '勝率グラフ（黒）';
+    const wrVal = curEntry?.winrate;
+    const wrText = (wrVal != null && isFinite(wrVal))
+      ? ` — 黒 ${(wrVal * 100).toFixed(1)}%`
+      : '';
+    lbl.innerHTML = `勝率グラフ（黒）<span class="wr-graph-cur-val">${wrText}</span>`;
     wrap.appendChild(lbl);
     wrap.appendChild(buildWinrateGraph(entries, currentIndex, totalMoves));
   }
@@ -1412,7 +1418,12 @@ function renderWinrateGraph(containerId, entries, currentIndex, totalMoves) {
   if (hasScore) {
     const lbl = document.createElement('div');
     lbl.className = 'wr-graph-label';
-    lbl.textContent = 'スコアグラフ（黒 + / 白 −）';
+    const sm = curEntry?.scoreMean;
+    let smText = '';
+    if (sm != null && isFinite(sm)) {
+      smText = ` — ${sm >= 0 ? '黒' : '白'} +${Math.abs(sm).toFixed(1)}`;
+    }
+    lbl.innerHTML = `スコアグラフ（黒 + / 白 −）<span class="wr-graph-cur-val">${smText}</span>`;
     wrap.appendChild(lbl);
     wrap.appendChild(buildScoreGraph(entries, currentIndex, totalMoves));
   }

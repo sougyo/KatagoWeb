@@ -694,6 +694,12 @@ html, body {
   letter-spacing: .05em;
   margin-bottom: 4px;
 }
+.wr-graph-cur-val {
+  font-weight: 700;
+  color: #e03030;
+  text-transform: none;
+  letter-spacing: 0;
+}
 
 /* ============================================================
    Scrollbar styling (webkit)
