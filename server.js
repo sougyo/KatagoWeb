@@ -479,6 +479,93 @@ app.get('/api/boards/:id', (req, res) => {
 });
 
 // Delete a board (and kill its KataGo process)
+// Convert a finished game to a record for review
+app.post('/api/boards/:id/to-record', (req, res) => {
+  const b = boards.get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'Not found' });
+
+  // GTP standard fixed handicap positions
+  const FIXED_HANDICAP = {
+    19: {
+      2: ['D4','Q16'],
+      3: ['D4','Q16','Q4'],
+      4: ['D4','Q16','Q4','D16'],
+      5: ['D4','Q16','Q4','D16','K10'],
+      6: ['D4','Q16','Q4','D16','D10','Q10'],
+      7: ['D4','Q16','Q4','D16','D10','Q10','K10'],
+      8: ['D4','Q16','Q4','D16','D10','Q10','K4','K16'],
+      9: ['D4','Q16','Q4','D16','D10','Q10','K4','K16','K10'],
+    },
+    13: {
+      2: ['D4','K10'],
+      3: ['D4','K10','K4'],
+      4: ['D4','K10','K4','D10'],
+      5: ['D4','K10','K4','D10','G7'],
+      6: ['D4','K10','K4','D10','D7','K7'],
+      7: ['D4','K10','K4','D10','D7','K7','G7'],
+      8: ['D4','K10','K4','D10','D7','K7','G4','G10'],
+      9: ['D4','K10','K4','D10','D7','K7','G4','G10','G7'],
+    },
+    9: {
+      2: ['C3','G7'],
+      3: ['C3','G7','G3'],
+      4: ['C3','G7','G3','C7'],
+      5: ['C3','G7','G3','C7','E5'],
+      6: ['C3','G7','G3','C7','C5','G5'],
+      7: ['C3','G7','G3','C7','C5','G5','E5'],
+      8: ['C3','G7','G3','C7','C5','G5','E3','E7'],
+      9: ['C3','G7','G3','C7','C5','G5','E3','E7','E5'],
+    },
+  };
+
+  const id = crypto.randomUUID();
+  const nodes = new Map();
+
+  const rootId = crypto.randomUUID();
+  const rootNode = { id: rootId, parentId: null, move: null, children: [] };
+
+  // Add handicap stones as AB setup in the root node
+  if (b.handicap >= 2) {
+    const positions = (FIXED_HANDICAP[b.size] ?? {})[b.handicap] ?? [];
+    if (positions.length > 0) rootNode.setup = { black: positions };
+  }
+
+  nodes.set(rootId, rootNode);
+
+  let prevId = rootId;
+  for (const m of b.moves) {
+    const nodeId = crypto.randomUUID();
+    nodes.set(nodeId, {
+      id: nodeId,
+      parentId: prevId,
+      move: { color: m.color, pos: m.position },
+      children: [],
+    });
+    nodes.get(prevId).children.push(nodeId);
+    prevId = nodeId;
+  }
+
+  const record = {
+    id,
+    name: b.name,
+    size: b.size,
+    komi: b.komi,
+    playerBlack: '',
+    playerWhite: 'KataGo',
+    type: 'record',
+    nodes,
+    rootId,
+    currentNodeId: prevId, // start at the last move
+    status: 'idle',
+    gtp: null,
+    createdAt: new Date().toISOString(),
+  };
+
+  records.set(id, record);
+  saveRecord(record);
+  res.json(recordPublic(record));
+});
+
 app.delete('/api/boards/:id', async (req, res) => {
   const b = boards.get(req.params.id);
   if (!b) return res.status(404).json({ error: 'Not found' });

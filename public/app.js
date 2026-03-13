@@ -494,6 +494,8 @@ function renderGame(board) {
   document.getElementById('btn-pass').disabled   = !canPlay;
   document.getElementById('btn-resign').disabled = !inGame;
 
+  document.getElementById('review-controls').hidden = board.status !== 'finished';
+
   const btnAnalyze = document.getElementById('btn-analyze');
   btnAnalyze.hidden    = !(canAnalyze || isAnalyzing);
   btnAnalyze.textContent = isAnalyzing ? '分析停止' : '分析';
@@ -1339,6 +1341,18 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!state.currentBoardId) return;
     const isAnalyzing = state.currentBoard?.status === 'analyzing';
     socket.emit(isAnalyzing ? 'stop-analysis' : 'start-analysis', state.currentBoardId);
+  });
+
+  document.getElementById('btn-to-record').addEventListener('click', async () => {
+    if (!state.currentBoardId) return;
+    try {
+      const res = await fetch(`/api/boards/${state.currentBoardId}/to-record`, { method: 'POST' });
+      const record = await res.json();
+      if (record.error) throw new Error(record.error);
+      showRecordView(record.id);
+    } catch (err) {
+      showToast(`棋譜モードへの移行に失敗しました: ${err.message}`, 'error');
+    }
   });
 
   // Record view – komi inline edit
