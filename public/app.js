@@ -514,9 +514,9 @@ function renderGame(board) {
   container.innerHTML = '';
   container.appendChild(buildBoardSvg(board, hasAnalysis ? state.analysisData : null));
 
-  // Win-rate graph
-  const liveWr = hasAnalysis ? (state.analysisData.find(c => c.order === 0) ?? state.analysisData[0])?.winrate : null;
-  renderWinrateGraph('winrate-graph-wrap', boardWinrateEntries(board.analysisAt, liveWr, board.moves.length), board.moves.length);
+  // Win-rate / score graph
+  const liveBest = hasAnalysis ? (state.analysisData.find(c => c.order === 0) ?? state.analysisData[0]) : null;
+  renderWinrateGraph('winrate-graph-wrap', boardWinrateEntries(board.analysisAt, liveBest?.winrate ?? null, board.moves.length, liveBest?.scoreMean ?? null), board.moves.length);
 }
 
 function renderMoveList(moves) {
@@ -829,10 +829,10 @@ function renderRecord(record) {
 
   renderMoveTree(record);
 
-  // Win-rate graph
-  const liveRecWr = (state.recordAnalysis?.length > 0)
-    ? (state.recordAnalysis.find(c => c.order === 0) ?? state.recordAnalysis[0])?.winrate : null;
-  renderWinrateGraph('rec-winrate-graph-wrap', recordWinrateEntries(nodes, currentNodeId, liveRecWr), moveNum);
+  // Win-rate / score graph
+  const liveRecBest = (state.recordAnalysis?.length > 0)
+    ? (state.recordAnalysis.find(c => c.order === 0) ?? state.recordAnalysis[0]) : null;
+  renderWinrateGraph('rec-winrate-graph-wrap', recordWinrateEntries(nodes, currentNodeId, liveRecBest?.winrate ?? null, liveRecBest?.scoreMean ?? null), moveNum);
 }
 
 function updateRecordAnalysisPanel(candidates) {
@@ -1045,11 +1045,11 @@ socket.on('analysis', candidates => {
 
   updateAnalysisPanel(candidates);
 
-  // Update win-rate graph in real-time with the current best winrate
-  const liveWr  = (candidates.find(c => c.order === 0) ?? candidates[0])?.winrate;
-  const moveIdx = state.currentBoard.moves.length;
+  // Update win-rate / score graph in real-time
+  const liveBestC = candidates.find(c => c.order === 0) ?? candidates[0];
+  const moveIdx   = state.currentBoard.moves.length;
   renderWinrateGraph('winrate-graph-wrap',
-    boardWinrateEntries(state.currentBoard.analysisAt, liveWr, moveIdx), moveIdx);
+    boardWinrateEntries(state.currentBoard.analysisAt, liveBestC?.winrate ?? null, moveIdx, liveBestC?.scoreMean ?? null), moveIdx);
 });
 
 socket.on('err', msg => {
@@ -1081,10 +1081,10 @@ socket.on('record-analysis', candidates => {
   const container = document.getElementById('rec-board-container');
   container.innerHTML = '';
   container.appendChild(buildRecordBoardSvg(state.currentRecord, stones, lastMove, nextColor, candidates));
-  // Update win-rate graph in real-time
-  const liveWr  = (candidates.find(c => c.order === 0) ?? candidates[0])?.winrate;
-  const moveNum = getMoveNumber(nodes, currentNodeId);
-  renderWinrateGraph('rec-winrate-graph-wrap', recordWinrateEntries(nodes, currentNodeId, liveWr), moveNum);
+  // Update win-rate / score graph in real-time
+  const liveRecBestC = candidates.find(c => c.order === 0) ?? candidates[0];
+  const moveNum      = getMoveNumber(nodes, currentNodeId);
+  renderWinrateGraph('rec-winrate-graph-wrap', recordWinrateEntries(nodes, currentNodeId, liveRecBestC?.winrate ?? null, liveRecBestC?.scoreMean ?? null), moveNum);
 });
 
 // ============================================================
@@ -1107,34 +1107,111 @@ function showToast(msg, type = 'info') {
 // Win-rate graph
 // ============================================================
 
-/** Convert board.analysisAt ({moveIndex: {winrate, scoreMean}}) to sorted entries array.
- *  If liveWinrate is provided, it overrides or adds the entry for liveMoveIndex. */
-function boardWinrateEntries(analysisAt, liveWinrate, liveMoveIndex) {
+/** Convert board.analysisAt ({moveIndex: {winrate, scoreMean}}) to sorted entries array. */
+function boardWinrateEntries(analysisAt, liveWinrate, liveMoveIndex, liveScoreMean) {
   const entries = Object.entries(analysisAt ?? {})
-    .map(([k, v]) => ({ index: parseInt(k, 10), winrate: v.winrate }))
-    .filter(e => isFinite(e.index) && isFinite(e.winrate))
+    .map(([k, v]) => ({ index: parseInt(k, 10), winrate: v.winrate ?? null, scoreMean: v.scoreMean ?? null }))
+    .filter(e => isFinite(e.index) && (isFinite(e.winrate) || isFinite(e.scoreMean)))
     .sort((a, b) => a.index - b.index);
-  if (liveWinrate != null && isFinite(liveWinrate)) {
+  if (liveWinrate != null || liveScoreMean != null) {
     const ex = entries.find(e => e.index === liveMoveIndex);
-    if (ex) { ex.winrate = liveWinrate; }
-    else { entries.push({ index: liveMoveIndex, winrate: liveWinrate }); entries.sort((a, b) => a.index - b.index); }
+    if (ex) {
+      if (liveWinrate  != null) ex.winrate   = liveWinrate;
+      if (liveScoreMean != null) ex.scoreMean = liveScoreMean;
+    } else {
+      entries.push({ index: liveMoveIndex, winrate: liveWinrate ?? null, scoreMean: liveScoreMean ?? null });
+      entries.sort((a, b) => a.index - b.index);
+    }
   }
   return entries;
 }
 
-/** Collect win rate entries along the path from root to currentNodeId.
- *  liveWinrate overrides the value for the current node (while analysis is streaming). */
-function recordWinrateEntries(nodes, currentNodeId, liveWinrate) {
+/** Collect win rate / score entries along the path from root to currentNodeId. */
+function recordWinrateEntries(nodes, currentNodeId, liveWinrate, liveScoreMean) {
   const path = [];
   let cur = currentNodeId;
   while (cur) { const n = nodes[cur]; if (!n) break; path.unshift(n); cur = n.parentId; }
   const entries = [];
   for (let i = 0; i < path.length; i++) {
-    const node = path[i];
-    const wr = (node.id === currentNodeId && liveWinrate != null) ? liveWinrate : node.winrate;
-    if (wr != null && isFinite(wr)) entries.push({ index: i, winrate: wr });
+    const node  = path[i];
+    const isCur = node.id === currentNodeId;
+    const wr = (isCur && liveWinrate   != null) ? liveWinrate   : node.winrate;
+    const sm = (isCur && liveScoreMean != null) ? liveScoreMean : node.scoreMean;
+    if ((wr != null && isFinite(wr)) || (sm != null && isFinite(sm))) {
+      entries.push({ index: i, winrate: wr ?? null, scoreMean: sm ?? null });
+    }
   }
   return entries;
+}
+
+/** Build an SVG score graph. entries = [{index, scoreMean}] sorted ascending.
+ *  Positive = black ahead, negative = white ahead. */
+function buildScoreGraph(entries, currentIndex) {
+  const SVG_W = 200, SVG_H = 62;
+  const PL = 24, PR = 4, PT = 5, PB = 10;
+  const W = SVG_W - PL - PR, H = SVG_H - PT - PB;
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${SVG_W} ${SVG_H}`, width: '100%', height: '62px' });
+
+  svg.appendChild(svgEl('rect', { x: PL, y: PT, width: W, height: H, fill: 'var(--bg)', stroke: 'var(--border)', 'stroke-width': '0.5' }));
+
+  const midY = PT + H * 0.5;
+  svg.appendChild(svgEl('line', { x1: PL, y1: midY, x2: PL + W, y2: midY, stroke: 'var(--border)', 'stroke-width': '0.8', 'stroke-dasharray': '3,2' }));
+
+  const valid = entries.filter(e => e.scoreMean != null && isFinite(e.scoreMean));
+
+  const yLab = (text, y) => {
+    const t = svgEl('text', { x: PL - 2, y, 'text-anchor': 'end', 'dominant-baseline': 'middle', 'font-size': '5', 'font-family': 'sans-serif', fill: 'var(--text-muted)' });
+    t.textContent = text; svg.appendChild(t);
+  };
+
+  if (valid.length === 0) { yLab('B', PT); yLab('0', midY); yLab('W', PT + H); return svg; }
+
+  const maxAbs = Math.max(...valid.map(e => Math.abs(e.scoreMean)), 5);
+  const range  = Math.ceil(maxAbs / 5) * 5;
+
+  yLab(`+${range}`, PT);
+  yLab('0', midY);
+  yLab(`-${range}`, PT + H);
+
+  const maxIdx  = Math.max(currentIndex ?? 0, entries[entries.length - 1]?.index ?? 0);
+  const safeMax = maxIdx > 0 ? maxIdx : 1;
+  const toX = idx   => PL + (idx / safeMax) * W;
+  const toY = score => midY - (score / range) * (H / 2);
+
+  // Filled area (split at 0: black side = blue-green, white side = reddish)
+  if (valid.length >= 2) {
+    // Build a single filled path per segment above/below midY would be complex;
+    // simpler: one path with a slight tint
+    let d = `M${toX(valid[0].index)},${midY}`;
+    for (const e of valid) d += ` L${toX(e.index)},${toY(e.scoreMean)}`;
+    d += ` L${toX(valid[valid.length - 1].index)},${midY} Z`;
+    svg.appendChild(svgEl('path', { d, fill: 'rgba(60,140,220,0.15)', stroke: 'none' }));
+  }
+
+  // Line
+  if (valid.length >= 2) {
+    let d = '';
+    for (let i = 0; i < valid.length; i++) {
+      const x = toX(valid[i].index), y = toY(valid[i].scoreMean);
+      d += i === 0 ? `M${x},${y}` : ` L${x},${y}`;
+    }
+    svg.appendChild(svgEl('path', { d, fill: 'none', stroke: '#3a7fc0', 'stroke-width': '1.4', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+  }
+
+  // Dots
+  for (const e of valid) {
+    const x = toX(e.index), y = toY(e.scoreMean);
+    const isCur = e.index === currentIndex;
+    svg.appendChild(svgEl('circle', { cx: x, cy: y, r: isCur ? '2.5' : '1.8', fill: isCur ? '#3a7fc0' : '#888', stroke: isCur ? 'white' : 'none', 'stroke-width': '1' }));
+  }
+
+  // X-axis label
+  const xLab = svgEl('text', { x: PL + W, y: PT + H + 8, 'text-anchor': 'end', 'font-size': '5', 'font-family': 'sans-serif', fill: 'var(--text-muted)' });
+  xLab.textContent = `第${maxIdx}手`;
+  svg.appendChild(xLab);
+
+  return svg;
 }
 
 /** Build an SVG win-rate graph. entries = [{index, winrate}] sorted ascending. */
@@ -1199,14 +1276,33 @@ function buildWinrateGraph(entries, currentIndex) {
   return svg;
 }
 
-/** Render win-rate graph into a container element. */
+/** Render win-rate + score graphs into a container element. */
 function renderWinrateGraph(containerId, entries, currentIndex) {
   const wrap = document.getElementById(containerId);
   if (!wrap) return;
-  if (entries.length === 0) { wrap.classList.add('hidden'); return; }
+
+  const hasWr    = entries.some(e => e.winrate   != null && isFinite(e.winrate));
+  const hasScore = entries.some(e => e.scoreMean != null && isFinite(e.scoreMean));
+  if (!hasWr && !hasScore) { wrap.classList.add('hidden'); return; }
+
   wrap.classList.remove('hidden');
-  wrap.innerHTML = '<div class="wr-graph-label">勝率グラフ（黒）</div>';
-  wrap.appendChild(buildWinrateGraph(entries, currentIndex));
+  wrap.innerHTML = '';
+
+  if (hasWr) {
+    const lbl = document.createElement('div');
+    lbl.className = 'wr-graph-label';
+    lbl.textContent = '勝率グラフ（黒）';
+    wrap.appendChild(lbl);
+    wrap.appendChild(buildWinrateGraph(entries, currentIndex));
+  }
+
+  if (hasScore) {
+    const lbl = document.createElement('div');
+    lbl.className = 'wr-graph-label';
+    lbl.textContent = 'スコアグラフ（黒 + / 白 −）';
+    wrap.appendChild(lbl);
+    wrap.appendChild(buildScoreGraph(entries, currentIndex));
+  }
 }
 
 // ============================================================
