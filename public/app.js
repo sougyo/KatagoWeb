@@ -1507,6 +1507,13 @@ function updateAnalysisPanel(candidates) {
 // Bootstrap
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
+  // Default 2-tap mode ON for mobile/touch devices
+  const isMobile = window.matchMedia('(pointer: coarse)').matches;
+  if (isMobile) {
+    document.getElementById('chk-two-tap').checked     = true;
+    document.getElementById('chk-rec-two-tap').checked = true;
+  }
+
   // List view
   document.getElementById('btn-new-board').addEventListener('click', openModal);
   document.getElementById('btn-new-record').addEventListener('click', openRecordModal);
