@@ -842,6 +842,9 @@ function renderRecord(record) {
   document.getElementById('btn-rec-next').disabled  = !hasNext;
   document.getElementById('btn-rec-last').disabled  = !hasNext;
 
+  // Delete button: enabled only when current node has a real move (not a setup/info phantom node)
+  document.getElementById('btn-rec-delete').disabled = !(hasPrev && node?.move != null);
+
   // Analyze button
   const btnAna = document.getElementById('btn-rec-analyze');
   const isAnalyzing = status === 'analyzing';
@@ -1684,6 +1687,20 @@ document.addEventListener('DOMContentLoaded', () => {
       state.recordAnalysis = null;
       socket.emit('record-navigate', { recordId: state.currentRecordId, nodeId: last });
     }
+  });
+
+  document.getElementById('btn-rec-delete').addEventListener('click', () => {
+    const rec = state.currentRecord;
+    if (!rec || rec.currentNodeId === rec.rootId) return;
+    const node = rec.nodes[rec.currentNodeId];
+    if (!node?.move) return; // Phantom/setup node with no actual move — nothing to delete
+    const hasChildren = (node?.children?.length ?? 0) > 0;
+    if (hasChildren) {
+      if (!confirm('後続の着手もすべて削除されます。本当に削除しますか？')) return;
+    }
+    state.recordAnalysis = null;
+    state.recPendingPos  = null;
+    socket.emit('record-delete-move', { recordId: state.currentRecordId, nodeId: rec.currentNodeId });
   });
 
   document.getElementById('btn-rec-pass').addEventListener('click', () => {

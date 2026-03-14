@@ -106,6 +106,7 @@ const _stmtUpdateNodeWinrate     = db.prepare('UPDATE record_nodes SET winrate =
 const _stmtUpdateRecordCurrent   = db.prepare('UPDATE records SET currentNodeId = ? WHERE id = ?');
 const _stmtUpdateRecordKomi      = db.prepare('UPDATE records SET komi = ? WHERE id = ?');
 const _stmtDeleteRecord          = db.prepare('DELETE FROM records WHERE id = ?');
+const _stmtDeleteNode            = db.prepare('DELETE FROM record_nodes WHERE id = ?');
 
 // ---- Analysis timeout ----
 const ANALYSIS_TIMEOUT_MS = 60_000; // auto-stop analysis after 1 minute
@@ -449,6 +450,14 @@ function _getNextColor(record, nodeId) {
   }
   if (hasBlackSetup) return whiteMoves <= blackMoves ? 'white' : 'black';
   return blackMoves <= whiteMoves ? 'black' : 'white';
+}
+
+/** Recursively collect nodeId and all its descendants. */
+function _collectSubtree(nodes, nodeId) {
+  const ids = [nodeId];
+  const node = nodes.get(nodeId);
+  if (node) for (const childId of node.children) ids.push(..._collectSubtree(nodes, childId));
+  return ids;
 }
 
 function buildGtpPath(record, nodeId) {
@@ -874,6 +883,39 @@ io.on('connection', socket => {
     r.currentNodeId = nodeId;
     r.status = 'idle';
     _stmtUpdateRecordCurrent.run(nodeId, recordId);
+    io.to(recordId).emit('record', recordPublic(r));
+  });
+
+  socket.on('record-delete-move', ({ recordId, nodeId }) => {
+    const r = records.get(recordId);
+    if (!r || !r.nodes.has(nodeId) || nodeId === r.rootId) return;
+    const node   = r.nodes.get(nodeId);
+    const parent = r.nodes.get(node.parentId);
+    if (!parent) return;
+
+    // Stop analysis if running
+    if (r.gtp?.isAnalyzing) {
+      _clearAnalysisTimer(r);
+      r.gtp.stopAnalysis().catch(() => {});
+    }
+
+    // Collect nodeId + all descendants
+    const toDelete = _collectSubtree(r.nodes, nodeId);
+
+    // Remove from parent's children list
+    parent.children = parent.children.filter(id => id !== nodeId);
+    r.currentNodeId = node.parentId;
+
+    db.transaction(() => {
+      _stmtUpdateNodeChildren.run(JSON.stringify(parent.children), parent.id);
+      _stmtUpdateRecordCurrent.run(node.parentId, recordId);
+      for (const id of toDelete) {
+        _stmtDeleteNode.run(id);
+        r.nodes.delete(id);
+      }
+    })();
+
+    r.status = 'idle';
     io.to(recordId).emit('record', recordPublic(r));
   });
 
