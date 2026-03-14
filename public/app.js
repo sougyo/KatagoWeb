@@ -1094,9 +1094,17 @@ function renderMoveTree(record) {
     }
   }
 
-  // Scroll current item into view
+  // Scroll current item into view within the tree container only (do not scroll the page)
   const curEl = el.querySelector('.current');
-  if (curEl) curEl.scrollIntoView({ block: 'nearest' });
+  if (curEl) {
+    const itemTop    = curEl.offsetTop;
+    const itemBottom = itemTop + curEl.offsetHeight;
+    if (itemTop < el.scrollTop) {
+      el.scrollTop = itemTop;
+    } else if (itemBottom > el.scrollTop + el.clientHeight) {
+      el.scrollTop = itemBottom - el.clientHeight;
+    }
+  }
 }
 
 // ============================================================
