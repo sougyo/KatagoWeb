@@ -124,9 +124,30 @@ const state = {
   recordAnalysis:  null,
   pendingPos:      null,   // 2タップ確認モード: 仮置き位置
   recPendingPos:   null,   // 棋譜ビュー用
+  candidatesCount: 5,      // 候補手の表示数
 };
 
 const socket = io();
+
+// ============================================================
+// Candidate tooltip helpers
+// ============================================================
+function showCandidateTooltip(c, pos, clientX, clientY) {
+  const wr  = Math.round((c.winrate ?? 0.5) * 100);
+  const sm  = c.scoreMean;
+  let text  = `${pos}  黒 ${wr}%`;
+  if (sm != null && isFinite(sm)) {
+    text += `  /  ${sm >= 0 ? '黒' : '白'}+${Math.abs(sm).toFixed(1)}目`;
+  }
+  const el = document.getElementById('candidate-tooltip');
+  el.textContent = text;
+  el.classList.remove('hidden');
+  el.style.left = `${clientX + 14}px`;
+  el.style.top  = `${clientY - 32}px`;
+}
+function hideCandidateTooltip() {
+  document.getElementById('candidate-tooltip').classList.add('hidden');
+}
 
 // ============================================================
 // Utility helpers
@@ -645,13 +666,15 @@ function buildBoardSvg(board, candidates = null) {
   }
 
   // ---- Analysis candidate overlay ----
+  const candidateGroupMap = new Map();
   if (candidates && candidates.length > 0) {
     const top = candidates
       .filter(c => c.move && c.move.toLowerCase() !== 'pass' && !stones[c.move])
       .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
-      .slice(0, 10);
+      .slice(0, state.candidatesCount);
     const maxVisits = top.length > 0 ? (top[0].visits ?? 1) : 1;
-    const fontSize = N <= 9 ? '0.32' : N <= 13 ? '0.28' : '0.23';
+    const fsWr    = N <= 9 ? '0.27' : N <= 13 ? '0.23' : '0.18';
+    const fsScore = N <= 9 ? '0.21' : N <= 13 ? '0.18' : '0.15';
 
     for (const c of top) {
       const xy = gtpToXY(c.move, N);
@@ -660,8 +683,11 @@ function buildBoardSvg(board, candidates = null) {
       const hue   = Math.round((c.winrate ?? 0.5) * 120);      // green=good, red=bad
       const alpha = (0.55 + ratio * 0.45).toFixed(2);
 
+      // Group: pointer-events none so hit rects below remain clickable; transition for smooth scale
+      const g = svgEl('g', { 'pointer-events': 'none', style: 'transition: transform 0.12s ease-out; transform-box: fill-box; transform-origin: center;' });
+
       // Filled circle: colour encodes winrate, opacity encodes relative visits
-      svg.appendChild(svgEl('circle', {
+      g.appendChild(svgEl('circle', {
         cx: xy.x, cy: xy.y, r: '0.44',
         fill: `hsla(${hue},80%,35%,${alpha})`,
         stroke: 'rgba(255,255,255,0.85)', 'stroke-width': '0.05',
@@ -669,21 +695,55 @@ function buildBoardSvg(board, candidates = null) {
 
       // Extra ring on the best move (order === 0)
       if (c.order === 0) {
-        svg.appendChild(svgEl('circle', {
+        g.appendChild(svgEl('circle', {
           cx: xy.x, cy: xy.y, r: '0.47',
           fill: 'none', stroke: 'white', 'stroke-width': '0.08',
         }));
       }
 
-      // Win-rate percentage label
-      const t = svgEl('text', {
-        x: xy.x, y: xy.y,
+      // Win-rate % label (shifted up when score is shown)
+      const hasScore = c.scoreMean != null && isFinite(c.scoreMean);
+      const yWr = hasScore ? xy.y - 0.11 : xy.y;
+      const t1 = svgEl('text', {
+        x: xy.x, y: yWr,
         'text-anchor': 'middle', 'dominant-baseline': 'middle',
-        'font-size': fontSize, 'font-weight': '700',
-        fill: 'white', 'pointer-events': 'none', 'font-family': 'sans-serif',
+        'font-size': fsWr, 'font-weight': '700',
+        fill: 'white', 'font-family': 'sans-serif',
       });
-      t.textContent = `${Math.round((c.winrate ?? 0.5) * 100)}`;
-      svg.appendChild(t);
+      t1.textContent = `${Math.round((c.winrate ?? 0.5) * 100)}`;
+      g.appendChild(t1);
+
+      // Score label (±N.N 目)
+      if (hasScore) {
+        const scoreStr = (c.scoreMean >= 0 ? '+' : '') + c.scoreMean.toFixed(1);
+        const t2 = svgEl('text', {
+          x: xy.x, y: xy.y + 0.12,
+          'text-anchor': 'middle', 'dominant-baseline': 'middle',
+          'font-size': fsScore,
+          fill: 'rgba(255,255,255,0.9)', 'font-family': 'sans-serif',
+        });
+        t2.textContent = scoreStr;
+        g.appendChild(t2);
+      }
+
+      svg.appendChild(g);
+      candidateGroupMap.set(c.move, { g, xy, c });
+    }
+  }
+
+  // Scale helper for candidate group hover (closure over candidateGroupMap)
+  // Uses CSS style.transform so the CSS transition fires.
+  let _hoveredCandPos = null;
+  function scaleCandidateAt(pos) {
+    if (_hoveredCandPos === pos) return;
+    if (_hoveredCandPos) {
+      const prev = candidateGroupMap.get(_hoveredCandPos);
+      if (prev) prev.g.style.transform = '';
+    }
+    _hoveredCandPos = pos;
+    if (pos) {
+      const info = candidateGroupMap.get(pos);
+      if (info) info.g.style.transform = 'scale(2)';
     }
   }
 
@@ -727,20 +787,33 @@ function buildBoardSvg(board, candidates = null) {
       }
     }
 
-    // Hover → show ghost stone
+    // Hover → show ghost stone + scale candidate if hovered
     svg.addEventListener('mousemove', e => {
       if (!e.target.classList.contains('hit')) {
         ghost.setAttribute('visibility', 'hidden');
+        scaleCandidateAt(null);
+        hideCandidateTooltip();
         return;
       }
-      const xy = gtpToXY(e.target.getAttribute('data-pos'), N);
+      const pos = e.target.getAttribute('data-pos');
+      const xy = gtpToXY(pos, N);
       ghost.setAttribute('cx', xy.x);
       ghost.setAttribute('cy', xy.y);
       ghost.setAttribute('visibility', 'visible');
+      const info = candidateGroupMap.get(pos);
+      if (info) {
+        scaleCandidateAt(pos);
+        showCandidateTooltip(info.c, pos, e.clientX, e.clientY);
+      } else {
+        scaleCandidateAt(null);
+        hideCandidateTooltip();
+      }
     });
-    svg.addEventListener('mouseleave', () =>
-      ghost.setAttribute('visibility', 'hidden')
-    );
+    svg.addEventListener('mouseleave', () => {
+      ghost.setAttribute('visibility', 'hidden');
+      scaleCandidateAt(null);
+      hideCandidateTooltip();
+    });
 
     // Click → optimistic update then send move (with optional 2-tap confirmation)
     svg.addEventListener('click', e => {
@@ -952,26 +1025,55 @@ function buildRecordBoardSvg(record, stones, lastMove, nextColor, candidates = n
   }
 
   // Candidates overlay
+  const recCandidateGroupMap = new Map();
   if (candidates && candidates.length > 0) {
     const top = candidates
       .filter(c => c.move && c.move.toLowerCase() !== 'pass' && !stones[c.move])
       .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
-      .slice(0, 10);
+      .slice(0, state.candidatesCount);
     const maxVisits = top.length > 0 ? (top[0].visits ?? 1) : 1;
-    const fontSize  = N <= 9 ? '0.32' : N <= 13 ? '0.28' : '0.23';
+    const fsWr    = N <= 9 ? '0.27' : N <= 13 ? '0.23' : '0.18';
+    const fsScore = N <= 9 ? '0.21' : N <= 13 ? '0.18' : '0.15';
     for (const c of top) {
       const xy = gtpToXY(c.move, N);
       if (!xy) continue;
       const ratio = (c.visits ?? 0) / maxVisits;
       const hue   = Math.round((c.winrate ?? 0.5) * 120);
       const alpha = (0.55 + ratio * 0.45).toFixed(2);
-      svg.appendChild(svgEl('circle', { cx: xy.x, cy: xy.y, r: '0.44', fill: `hsla(${hue},80%,35%,${alpha})`, stroke: 'rgba(255,255,255,0.85)', 'stroke-width': '0.05' }));
+      const g = svgEl('g', { 'pointer-events': 'none', style: 'transition: transform 0.12s ease-out; transform-box: fill-box; transform-origin: center;' });
+      g.appendChild(svgEl('circle', { cx: xy.x, cy: xy.y, r: '0.44', fill: `hsla(${hue},80%,35%,${alpha})`, stroke: 'rgba(255,255,255,0.85)', 'stroke-width': '0.05' }));
       if (c.order === 0) {
-        svg.appendChild(svgEl('circle', { cx: xy.x, cy: xy.y, r: '0.47', fill: 'none', stroke: 'white', 'stroke-width': '0.08' }));
+        g.appendChild(svgEl('circle', { cx: xy.x, cy: xy.y, r: '0.47', fill: 'none', stroke: 'white', 'stroke-width': '0.08' }));
       }
-      const t = svgEl('text', { x: xy.x, y: xy.y, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'font-size': fontSize, 'font-weight': '700', fill: 'white', 'pointer-events': 'none', 'font-family': 'sans-serif' });
-      t.textContent = `${Math.round((c.winrate ?? 0.5) * 100)}`;
-      svg.appendChild(t);
+      const hasScore = c.scoreMean != null && isFinite(c.scoreMean);
+      const yWr = hasScore ? xy.y - 0.11 : xy.y;
+      const t1 = svgEl('text', { x: xy.x, y: yWr, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'font-size': fsWr, 'font-weight': '700', fill: 'white', 'font-family': 'sans-serif' });
+      t1.textContent = `${Math.round((c.winrate ?? 0.5) * 100)}`;
+      g.appendChild(t1);
+      if (hasScore) {
+        const scoreStr = (c.scoreMean >= 0 ? '+' : '') + c.scoreMean.toFixed(1);
+        const t2 = svgEl('text', { x: xy.x, y: xy.y + 0.12, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'font-size': fsScore, fill: 'rgba(255,255,255,0.9)', 'font-family': 'sans-serif' });
+        t2.textContent = scoreStr;
+        g.appendChild(t2);
+      }
+      svg.appendChild(g);
+      recCandidateGroupMap.set(c.move, { g, xy, c });
+    }
+  }
+
+  // Scale helper for candidate group hover (closure over recCandidateGroupMap)
+  // Uses CSS style.transform so the CSS transition fires.
+  let _recHoveredCandPos = null;
+  function scaleRecCandidateAt(pos) {
+    if (_recHoveredCandPos === pos) return;
+    if (_recHoveredCandPos) {
+      const prev = recCandidateGroupMap.get(_recHoveredCandPos);
+      if (prev) prev.g.style.transform = '';
+    }
+    _recHoveredCandPos = pos;
+    if (pos) {
+      const info = recCandidateGroupMap.get(pos);
+      if (info) info.g.style.transform = 'scale(2)';
     }
   }
 
@@ -1007,13 +1109,31 @@ function buildRecordBoardSvg(record, stones, lastMove, nextColor, candidates = n
   }
 
   svg.addEventListener('mousemove', e => {
-    if (!e.target.classList.contains('hit')) { ghost.setAttribute('visibility', 'hidden'); return; }
-    const xy = gtpToXY(e.target.getAttribute('data-pos'), N);
+    if (!e.target.classList.contains('hit')) {
+      ghost.setAttribute('visibility', 'hidden');
+      scaleRecCandidateAt(null);
+      hideCandidateTooltip();
+      return;
+    }
+    const pos = e.target.getAttribute('data-pos');
+    const xy = gtpToXY(pos, N);
     ghost.setAttribute('cx', xy.x);
     ghost.setAttribute('cy', xy.y);
     ghost.setAttribute('visibility', 'visible');
+    const info = recCandidateGroupMap.get(pos);
+    if (info) {
+      scaleRecCandidateAt(pos);
+      showCandidateTooltip(info.c, pos, e.clientX, e.clientY);
+    } else {
+      scaleRecCandidateAt(null);
+      hideCandidateTooltip();
+    }
   });
-  svg.addEventListener('mouseleave', () => ghost.setAttribute('visibility', 'hidden'));
+  svg.addEventListener('mouseleave', () => {
+    ghost.setAttribute('visibility', 'hidden');
+    scaleRecCandidateAt(null);
+    hideCandidateTooltip();
+  });
 
   svg.addEventListener('click', e => {
     if (!e.target.classList.contains('hit')) return;
@@ -1609,6 +1729,38 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-cancel-record-manual').addEventListener('click', closeRecordModal);
 
   // Game view
+  // Candidates count slider (shared between game and record views)
+  function onCandidatesCountChange(value) {
+    state.candidatesCount = value;
+    document.getElementById('candidates-count').value = value;
+    document.getElementById('rec-candidates-count').value = value;
+    document.getElementById('candidates-count-val').textContent = value;
+    document.getElementById('rec-candidates-count-val').textContent = value;
+    // Re-render game board if analysis data is present
+    if (state.currentBoard && state.analysisData) {
+      const container = document.getElementById('board-container');
+      container.innerHTML = '';
+      container.appendChild(buildBoardSvg(state.currentBoard, state.analysisData));
+    }
+    // Re-render record board if analysis data is present
+    if (state.currentRecord && state.recordAnalysis) {
+      const { nodes, rootId, currentNodeId, size } = state.currentRecord;
+      const stones    = computeStones(nodes, rootId, currentNodeId, size);
+      const lastNode  = nodes[currentNodeId];
+      const lastMove  = lastNode?.move?.pos && lastNode.move.pos !== 'pass' ? lastNode.move.pos : null;
+      const nextColor = getNextColor(nodes, currentNodeId);
+      const container = document.getElementById('rec-board-container');
+      container.innerHTML = '';
+      container.appendChild(buildRecordBoardSvg(state.currentRecord, stones, lastMove, nextColor, state.recordAnalysis));
+    }
+  }
+  document.getElementById('candidates-count').addEventListener('input', e => {
+    onCandidatesCountChange(parseInt(e.target.value, 10));
+  });
+  document.getElementById('rec-candidates-count').addEventListener('input', e => {
+    onCandidatesCountChange(parseInt(e.target.value, 10));
+  });
+
   document.getElementById('btn-back').addEventListener('click', showListView);
   document.getElementById('btn-pass').addEventListener('click', () => {
     if (state.currentBoardId) {

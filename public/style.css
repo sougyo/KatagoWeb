@@ -372,6 +372,16 @@ html, body {
   height: 16px;
   cursor: pointer;
 }
+.candidates-slider-label {
+  font-size: .78rem;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.candidates-slider {
+  width: 100%;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
 
 .sidebar-history {
   flex: 1;
@@ -520,6 +530,25 @@ html, body {
   transform: translateX(-50%) translateY(0);
 }
 #toast.toast-error { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+/* ============================================================
+   Candidate hover tooltip
+   ============================================================ */
+.candidate-tooltip {
+  position: fixed;
+  z-index: 300;
+  background: rgba(20, 20, 30, 0.92);
+  color: #fff;
+  font-size: .82rem;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.15);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.candidate-tooltip.hidden { display: none; }
 
 /* ============================================================
    Analyze button
