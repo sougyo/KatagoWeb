@@ -838,7 +838,7 @@ io.on('connection', socket => {
       }
       const candidates = [...accCandidates.values()]
         .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
-        .slice(0, 10)
+        .slice(0, 20)
         .map((c, i) => ({ ...c, order: i }));
       // Update in-memory win rate for current position (saved to DB on analysis stop)
       const best = candidates.find(c => c.order === 0) ?? candidates[0];
@@ -1027,7 +1027,7 @@ io.on('connection', socket => {
         }
         const candidates = [...accCandidates.values()]
           .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
-          .slice(0, 10)
+          .slice(0, 20)
           .map((c, i) => ({ ...c, order: i }));
         // Update current node's win rate in memory (saved to DB on analysis stop)
         const best = candidates.find(c => c.order === 0) ?? candidates[0];
@@ -1108,7 +1108,13 @@ function _parseAnalysisLine(line) {
       case 'prior':     r.prior     = parseFloat(tok[++i]); break;
       case 'lcb':       r.lcb       = parseFloat(tok[++i]); break;
       case 'order':     r.order     = parseInt(tok[++i], 10); break;
-      case 'pv':        r.pv = tok.slice(i + 1); i = tok.length; break;
+      case 'pv': {
+        let pvEnd = i + 1;
+        while (pvEnd < tok.length && tok[pvEnd] !== 'info') pvEnd++;
+        r.pv = tok.slice(i + 1, pvEnd);
+        i = pvEnd - 1;
+        break;
+      }
     }
   }
   return r;

@@ -104,7 +104,10 @@ class GTPClient {
       this.buffer = this.buffer.slice(nl + 1);
 
       if (line.startsWith('info ')) {
-        this._analysisBuf.push(line);
+        // KataGo v1.16+ outputs all candidates on one line separated by spaces.
+        // Split into individual candidate entries at each "info " boundary.
+        const parts = line.split(/ (?=info )/);
+        for (const part of parts) this._analysisBuf.push(part);
       } else if (line === '') {
         if (this._analysisBuf.length > 0) {
           const batch = [...this._analysisBuf];
