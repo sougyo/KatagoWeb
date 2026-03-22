@@ -2,3 +2,4 @@ node_modules
 gtp_logs
 *.swp
 katago.db*
+CLAUDE.md
