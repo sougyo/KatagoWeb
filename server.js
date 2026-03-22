@@ -67,8 +67,9 @@ db.exec(`
 // Migrations
 try { db.exec('ALTER TABLE record_nodes ADD COLUMN setup    TEXT'); } catch (_) {}
 try { db.exec('ALTER TABLE boards       ADD COLUMN analysisAt TEXT'); } catch (_) {}
-try { db.exec('ALTER TABLE record_nodes ADD COLUMN winrate   REAL'); } catch (_) {}
-try { db.exec('ALTER TABLE record_nodes ADD COLUMN scoreMean REAL'); } catch (_) {}
+try { db.exec('ALTER TABLE record_nodes ADD COLUMN winrate    REAL'); } catch (_) {}
+try { db.exec('ALTER TABLE record_nodes ADD COLUMN scoreMean  REAL'); } catch (_) {}
+try { db.exec('ALTER TABLE record_nodes ADD COLUMN candidates TEXT'); } catch (_) {}
 
 // Prepared statements
 const _stmtUpsertBoard = db.prepare(`
@@ -98,11 +99,12 @@ const _stmtUpsertRecord = db.prepare(`
     (@id, @name, @size, @komi, @playerBlack, @playerWhite, @rootId, @currentNodeId, @createdAt)
 `);
 const _stmtUpsertNode = db.prepare(`
-  INSERT OR REPLACE INTO record_nodes (id, recordId, parentId, move, setup, children, winrate, scoreMean)
-  VALUES (@id, @recordId, @parentId, @move, @setup, @children, @winrate, @scoreMean)
+  INSERT OR REPLACE INTO record_nodes (id, recordId, parentId, move, setup, children, winrate, scoreMean, candidates)
+  VALUES (@id, @recordId, @parentId, @move, @setup, @children, @winrate, @scoreMean, @candidates)
 `);
 const _stmtUpdateNodeChildren    = db.prepare('UPDATE record_nodes SET children = ? WHERE id = ?');
 const _stmtUpdateNodeWinrate     = db.prepare('UPDATE record_nodes SET winrate = ?, scoreMean = ? WHERE id = ?');
+const _stmtUpdateNodeCandidates  = db.prepare('UPDATE record_nodes SET winrate = ?, scoreMean = ?, candidates = ? WHERE id = ?');
 const _stmtUpdateRecordCurrent   = db.prepare('UPDATE records SET currentNodeId = ? WHERE id = ?');
 const _stmtUpdateRecordKomi      = db.prepare('UPDATE records SET komi = ? WHERE id = ?');
 const _stmtDeleteRecord          = db.prepare('DELETE FROM records WHERE id = ?');
@@ -128,12 +130,13 @@ function saveRecord(r) {
     for (const [, node] of r.nodes) {
       _stmtUpsertNode.run({
         id: node.id, recordId: r.id,
-        parentId:  node.parentId ?? null,
-        move:      node.move  ? JSON.stringify(node.move)  : null,
-        setup:     node.setup ? JSON.stringify(node.setup) : null,
-        children:  JSON.stringify(node.children),
-        winrate:   node.winrate   ?? null,
-        scoreMean: node.scoreMean ?? null,
+        parentId:   node.parentId ?? null,
+        move:       node.move       ? JSON.stringify(node.move)       : null,
+        setup:      node.setup      ? JSON.stringify(node.setup)      : null,
+        children:   JSON.stringify(node.children),
+        winrate:    node.winrate    ?? null,
+        scoreMean:  node.scoreMean  ?? null,
+        candidates: node.candidates ? JSON.stringify(node.candidates) : null,
       });
     }
   })();
@@ -178,11 +181,12 @@ const records = new Map();  // Map<id, Record>
     for (const n of (nodesByRecord.get(row.id) ?? [])) {
       nodes.set(n.id, {
         id: n.id, parentId: n.parentId ?? null,
-        move:      n.move  ? JSON.parse(n.move)  : null,
-        setup:     n.setup ? JSON.parse(n.setup) : null,
-        children:  JSON.parse(n.children),
-        winrate:   n.winrate   ?? null,
-        scoreMean: n.scoreMean ?? null,
+        move:       n.move       ? JSON.parse(n.move)       : null,
+        setup:      n.setup      ? JSON.parse(n.setup)      : null,
+        children:   JSON.parse(n.children),
+        winrate:    n.winrate    ?? null,
+        scoreMean:  n.scoreMean  ?? null,
+        candidates: n.candidates ? JSON.parse(n.candidates) : null,
       });
     }
     records.set(row.id, {
@@ -410,12 +414,17 @@ function makeBoard({ name, size, handicap }) {
 function boardPublic(b) {
   const { gtp, _analysisTimer, ...pub } = b;
   pub.moveCount = b.moves.length;
+  pub.currentCandidates = b.analysisAt[b.moves.length]?.candidates ?? null;
   return pub;
 }
 
 function recordPublic(r) {
   const nodesObj = {};
-  for (const [k, v] of r.nodes) nodesObj[k] = v;
+  for (const [k, v] of r.nodes) {
+    const { candidates, ...nodeData } = v;  // candidates は currentCandidates で別送
+    nodesObj[k] = nodeData;
+  }
+  const currentNode = r.nodes.get(r.currentNodeId);
   return {
     id:            r.id,
     name:          r.name,
@@ -429,6 +438,7 @@ function recordPublic(r) {
     currentNodeId: r.currentNodeId,
     status:        r.status,
     createdAt:     r.createdAt,
+    currentCandidates: currentNode?.candidates ?? null,
   };
 }
 
@@ -840,10 +850,10 @@ io.on('connection', socket => {
         .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
         .slice(0, 20)
         .map((c, i) => ({ ...c, order: i }));
-      // Update in-memory win rate for current position (saved to DB on analysis stop)
+      // Update in-memory win rate and candidates for current position (saved to DB on analysis stop)
       const best = candidates.find(c => c.order === 0) ?? candidates[0];
       if (best) {
-        b.analysisAt[b.moves.length] = { winrate: best.winrate, scoreMean: best.scoreMean ?? null };
+        b.analysisAt[b.moves.length] = { winrate: best.winrate, scoreMean: best.scoreMean ?? null, candidates };
       }
       console.log(`[analysis] acc ${accCandidates.size} moves, emitting ${candidates.length}, top: ${candidates[0]?.move} wr=${candidates[0]?.winrate?.toFixed(3)}`);
       io.to(boardId).emit('analysis', candidates);
@@ -878,7 +888,7 @@ io.on('connection', socket => {
       _clearAnalysisTimer(r);
       r.gtp.stopAnalysis().catch(() => {});
       const node = r.nodes.get(r.currentNodeId);
-      if (node?.winrate != null) _stmtUpdateNodeWinrate.run(node.winrate, node.scoreMean ?? null, node.id);
+      if (node?.winrate != null) _stmtUpdateNodeCandidates.run(node.winrate, node.scoreMean ?? null, node.candidates ? JSON.stringify(node.candidates) : null, node.id);
     }
     r.currentNodeId = nodeId;
     r.status = 'idle';
@@ -1006,7 +1016,7 @@ io.on('connection', socket => {
         if (!r.gtp?.isAnalyzing) return;
         await r.gtp.stopAnalysis().catch(() => {});
         const node = r.nodes.get(r.currentNodeId);
-        if (node?.winrate != null) _stmtUpdateNodeWinrate.run(node.winrate, node.scoreMean ?? null, node.id);
+        if (node?.winrate != null) _stmtUpdateNodeCandidates.run(node.winrate, node.scoreMean ?? null, node.candidates ? JSON.stringify(node.candidates) : null, node.id);
         r.status = 'idle';
         io.to(recordId).emit('record', recordPublic(r));
       }, ANALYSIS_TIMEOUT_MS);
@@ -1029,11 +1039,11 @@ io.on('connection', socket => {
           .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
           .slice(0, 20)
           .map((c, i) => ({ ...c, order: i }));
-        // Update current node's win rate in memory (saved to DB on analysis stop)
+        // Update current node's win rate and candidates in memory (saved to DB on analysis stop)
         const best = candidates.find(c => c.order === 0) ?? candidates[0];
         if (best) {
           const node = r.nodes.get(r.currentNodeId);
-          if (node) { node.winrate = best.winrate; node.scoreMean = best.scoreMean ?? null; }
+          if (node) { node.winrate = best.winrate; node.scoreMean = best.scoreMean ?? null; node.candidates = candidates; }
         }
         io.to(recordId).emit('record-analysis', candidates);
       });
@@ -1050,7 +1060,7 @@ io.on('connection', socket => {
     _clearAnalysisTimer(r);
     await r.gtp.stopAnalysis().catch(() => {});
     const node = r.nodes.get(r.currentNodeId);
-    if (node?.winrate != null) _stmtUpdateNodeWinrate.run(node.winrate, node.scoreMean ?? null, node.id);
+    if (node?.winrate != null) _stmtUpdateNodeCandidates.run(node.winrate, node.scoreMean ?? null, node.candidates ? JSON.stringify(node.candidates) : null, node.id);
     r.status = 'idle';
     io.to(recordId).emit('record', recordPublic(r));
   });

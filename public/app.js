@@ -125,6 +125,7 @@ const state = {
   pendingPos:      null,   // 2タップ確認モード: 仮置き位置
   recPendingPos:   null,   // 棋譜ビュー用
   candidatesCount: 5,      // 候補手の表示数
+  showCandidates:  true,   // 候補手を盤面に表示するか
 };
 
 const socket = io();
@@ -537,7 +538,7 @@ function renderGame(board) {
   // Board SVG: 解析データがある間は候補手を表示
   const container = document.getElementById('board-container');
   container.innerHTML = '';
-  container.appendChild(buildBoardSvg(board, hasAnalysis ? state.analysisData : null));
+  container.appendChild(buildBoardSvg(board, hasAnalysis && state.showCandidates ? state.analysisData : null));
 
   // Win-rate / score graph
   const liveBest = hasAnalysis ? (state.analysisData.find(c => c.order === 0) ?? state.analysisData[0]) : null;
@@ -940,7 +941,7 @@ function renderRecord(record) {
   const container = document.getElementById('rec-board-container');
   container.innerHTML = '';
   container.appendChild(buildRecordBoardSvg(record, stones, lastMove, nextColor,
-    hasAna ? state.recordAnalysis : null));
+    hasAna && state.showCandidates ? state.recordAnalysis : null));
 
   renderMoveTree(record);
 
@@ -1238,6 +1239,10 @@ socket.on('board', board => {
     state.analysisData = null;
     state.pendingPos = null; // サーバーから着手確認 → 仮置きを解除
   }
+  // 解析中以外のときは保存済み候補手を復元する
+  if (board.status !== 'analyzing') {
+    state.analysisData = board.currentCandidates ?? null;
+  }
   state.currentBoard = board;
   renderGame(board);
 });
@@ -1252,7 +1257,7 @@ socket.on('analysis', candidates => {
 
   const container = document.getElementById('board-container');
   container.innerHTML = '';
-  container.appendChild(buildBoardSvg(state.currentBoard, candidates));
+  container.appendChild(buildBoardSvg(state.currentBoard, state.showCandidates ? candidates : null));
 
   updateAnalysisPanel(candidates);
 
@@ -1275,7 +1280,14 @@ socket.on('connect', () => {
 socket.on('record', record => {
   if (record.id !== state.currentRecordId) return;
   const prevNodeId = state.currentRecord?.currentNodeId;
-  if (record.currentNodeId !== prevNodeId) state.recPendingPos = null;
+  if (record.currentNodeId !== prevNodeId) {
+    state.recPendingPos = null;
+    // ノード移動時: 新しいノードの保存済み候補手を復元（なければクリア）
+    state.recordAnalysis = record.currentCandidates ?? null;
+  } else if (record.status === 'idle') {
+    // 解析停止時: 保存済み候補手を復元
+    state.recordAnalysis = record.currentCandidates ?? null;
+  }
   state.currentRecord = record;
   renderRecord(record);
 });
@@ -1293,7 +1305,7 @@ socket.on('record-analysis', candidates => {
   const nextColor = getNextColor(nodes, currentNodeId);
   const container = document.getElementById('rec-board-container');
   container.innerHTML = '';
-  container.appendChild(buildRecordBoardSvg(state.currentRecord, stones, lastMove, nextColor, candidates));
+  container.appendChild(buildRecordBoardSvg(state.currentRecord, stones, lastMove, nextColor, state.showCandidates ? candidates : null));
   // Update win-rate / score graph in real-time
   const liveRecBestC   = candidates.find(c => c.order === 0) ?? candidates[0];
   const moveNum        = getMoveNumber(nodes, currentNodeId);
@@ -1740,7 +1752,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.currentBoard && state.analysisData) {
       const container = document.getElementById('board-container');
       container.innerHTML = '';
-      container.appendChild(buildBoardSvg(state.currentBoard, state.analysisData));
+      container.appendChild(buildBoardSvg(state.currentBoard, state.showCandidates ? state.analysisData : null));
     }
     // Re-render record board if analysis data is present
     if (state.currentRecord && state.recordAnalysis) {
@@ -1751,7 +1763,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const nextColor = getNextColor(nodes, currentNodeId);
       const container = document.getElementById('rec-board-container');
       container.innerHTML = '';
-      container.appendChild(buildRecordBoardSvg(state.currentRecord, stones, lastMove, nextColor, state.recordAnalysis));
+      container.appendChild(buildRecordBoardSvg(state.currentRecord, stones, lastMove, nextColor, state.showCandidates ? state.recordAnalysis : null));
     }
   }
   document.getElementById('candidates-count').addEventListener('input', e => {
@@ -1759,6 +1771,21 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('rec-candidates-count').addEventListener('input', e => {
     onCandidatesCountChange(parseInt(e.target.value, 10));
+  });
+
+  // 候補手表示チェックボックス（対局・棋譜共通）
+  function onShowCandidatesChange(checked) {
+    state.showCandidates = checked;
+    document.getElementById('chk-show-candidates').checked     = checked;
+    document.getElementById('chk-rec-show-candidates').checked = checked;
+    if (state.currentBoard) renderGame(state.currentBoard);
+    if (state.currentRecord) renderRecord(state.currentRecord);
+  }
+  document.getElementById('chk-show-candidates').addEventListener('change', e => {
+    onShowCandidatesChange(e.target.checked);
+  });
+  document.getElementById('chk-rec-show-candidates').addEventListener('change', e => {
+    onShowCandidatesChange(e.target.checked);
   });
 
   document.getElementById('btn-back').addEventListener('click', showListView);
