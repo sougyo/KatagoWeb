@@ -110,6 +110,8 @@ class GoBoard {
   }
 }
 
+const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+
 // ============================================================
 // App state
 // ============================================================
@@ -126,6 +128,8 @@ const state = {
   recPendingPos:   null,   // 棋譜ビュー用
   candidatesCount: 5,      // 候補手の表示数
   showCandidates:  true,   // 候補手を盤面に表示するか
+  pvPos:           null,   // 対局ビューでピン中のPV候補手位置
+  recPvPos:        null,   // 棋譜ビューでピン中のPV候補手位置
 };
 
 const socket = io();
@@ -175,6 +179,23 @@ function gtpToXY(pos, N) {
 // SVG {x,y} → GTP position string
 function xyToGtp(x, y, N) {
   return `${GTP_COLS[x - 1]}${N - y + 1}`;
+}
+
+// PV（予想手順）の各手をSVG用データに変換する
+// pvMoves: KataGoのpvフィールド(GTP座標の配列), startColor: 最初の手の色
+function buildPvStones(pvMoves, startColor, N) {
+  const MAX_PV = 8;
+  const result = [];
+  let color = startColor;
+  for (let i = 0; i < Math.min(pvMoves.length, MAX_PV); i++) {
+    const pos = pvMoves[i];
+    if (!pos || pos.toUpperCase() === 'PASS') { color = color === 'black' ? 'white' : 'black'; continue; }
+    const xy = gtpToXY(pos.toUpperCase(), N);
+    if (!xy) { color = color === 'black' ? 'white' : 'black'; continue; }
+    result.push({ xy, color, num: i + 1 });
+    color = color === 'black' ? 'white' : 'black';
+  }
+  return result;
 }
 
 // ============================================================
@@ -732,6 +753,39 @@ function buildBoardSvg(board, candidates = null) {
     }
   }
 
+  // ---- PV（予想手順）オーバーレイ ----
+  const pvLayer = svgEl('g', { 'pointer-events': 'none' });
+  svg.appendChild(pvLayer);
+  const fsPv = N <= 9 ? '0.28' : N <= 13 ? '0.24' : '0.20';
+  const rPv  = N <= 9 ? '0.40' : N <= 13 ? '0.38' : '0.36';
+  function renderPvLayer(pvPos) {
+    while (pvLayer.firstChild) pvLayer.removeChild(pvLayer.firstChild);
+    if (!pvPos) return;
+    const info = candidateGroupMap.get(pvPos);
+    if (!info?.c?.pv?.length) return;
+    for (const { xy, color: c, num } of buildPvStones(info.c.pv, currentPlayer, N)) {
+      const g = svgEl('g', {});
+      g.appendChild(svgEl('circle', {
+        cx: xy.x, cy: xy.y, r: rPv,
+        fill: c === 'black' ? 'rgba(20,20,20,0.82)' : 'rgba(240,240,240,0.85)',
+        stroke: c === 'black' ? 'rgba(255,255,255,0.5)' : 'rgba(80,80,80,0.45)',
+        'stroke-width': '0.05',
+      }));
+      const t = svgEl('text', {
+        x: xy.x, y: xy.y, 'text-anchor': 'middle', 'dominant-baseline': 'central',
+        'font-size': fsPv, 'font-weight': '700',
+        fill: c === 'black' ? 'white' : '#222', 'font-family': 'sans-serif',
+      });
+      t.textContent = String(num);
+      g.appendChild(t);
+      pvLayer.appendChild(g);
+    }
+  }
+  // 初期PV: pendingPos（2タップ仮置き）またはpvPos（タッチピン）から復元
+  renderPvLayer(
+    state.pendingPos && candidateGroupMap.has(state.pendingPos) ? state.pendingPos : state.pvPos
+  );
+
   // Scale helper for candidate group hover (closure over candidateGroupMap)
   // Uses CSS style.transform so the CSS transition fires.
   let _hoveredCandPos = null;
@@ -805,15 +859,22 @@ function buildBoardSvg(board, candidates = null) {
       if (info) {
         scaleCandidateAt(pos);
         showCandidateTooltip(info.c, pos, e.clientX, e.clientY);
+        renderPvLayer(pos);
       } else {
         scaleCandidateAt(null);
         hideCandidateTooltip();
+        renderPvLayer(
+          state.pendingPos && candidateGroupMap.has(state.pendingPos) ? state.pendingPos : state.pvPos ?? null
+        );
       }
     });
     svg.addEventListener('mouseleave', () => {
       ghost.setAttribute('visibility', 'hidden');
       scaleCandidateAt(null);
       hideCandidateTooltip();
+      renderPvLayer(
+        state.pendingPos && candidateGroupMap.has(state.pendingPos) ? state.pendingPos : state.pvPos ?? null
+      );
     });
 
     // Click → optimistic update then send move (with optional 2-tap confirmation)
@@ -822,10 +883,23 @@ function buildBoardSvg(board, candidates = null) {
       const pos = e.target.getAttribute('data-pos');
       const twoTap = document.getElementById('chk-two-tap')?.checked;
 
+      // タッチデバイス + 非2タップ: 候補手タップでPVピン表示
+      if (isTouchDevice && !twoTap && candidateGroupMap.has(pos)) {
+        if (state.pvPos !== pos) {
+          state.pvPos = pos;
+          renderPvLayer(pos);
+          return;
+        }
+        // 同じ候補手を再タップ → PV解除して着手へ
+        state.pvPos = null;
+        renderPvLayer(null);
+      }
+
       if (twoTap) {
         if (state.pendingPos === pos) {
           // 2回目のタップ → 着手確定
           state.pendingPos = null;
+          state.pvPos = null;
           state.analysisData = null;
           renderGame({
             ...board,
@@ -843,6 +917,7 @@ function buildBoardSvg(board, candidates = null) {
         return;
       }
 
+      state.pvPos = null;
       state.analysisData = null; // 着手と同時に解析結果を消去
 
       // Immediately render the player's stone without waiting for the server.
@@ -1062,6 +1137,39 @@ function buildRecordBoardSvg(record, stones, lastMove, nextColor, candidates = n
     }
   }
 
+  // ---- PV（予想手順）オーバーレイ ----
+  const recPvLayer = svgEl('g', { 'pointer-events': 'none' });
+  svg.appendChild(recPvLayer);
+  const fsPvRec = N <= 9 ? '0.28' : N <= 13 ? '0.24' : '0.20';
+  const rPvRec  = N <= 9 ? '0.40' : N <= 13 ? '0.38' : '0.36';
+  function renderRecPvLayer(pvPos) {
+    while (recPvLayer.firstChild) recPvLayer.removeChild(recPvLayer.firstChild);
+    if (!pvPos) return;
+    const info = recCandidateGroupMap.get(pvPos);
+    if (!info?.c?.pv?.length) return;
+    for (const { xy, color: c, num } of buildPvStones(info.c.pv, nextColor, N)) {
+      const g = svgEl('g', {});
+      g.appendChild(svgEl('circle', {
+        cx: xy.x, cy: xy.y, r: rPvRec,
+        fill: c === 'black' ? 'rgba(20,20,20,0.82)' : 'rgba(240,240,240,0.85)',
+        stroke: c === 'black' ? 'rgba(255,255,255,0.5)' : 'rgba(80,80,80,0.45)',
+        'stroke-width': '0.05',
+      }));
+      const t = svgEl('text', {
+        x: xy.x, y: xy.y, 'text-anchor': 'middle', 'dominant-baseline': 'central',
+        'font-size': fsPvRec, 'font-weight': '700',
+        fill: c === 'black' ? 'white' : '#222', 'font-family': 'sans-serif',
+      });
+      t.textContent = String(num);
+      g.appendChild(t);
+      recPvLayer.appendChild(g);
+    }
+  }
+  // 初期PV: recPendingPos（2タップ仮置き）またはrecPvPos（タッチピン）から復元
+  renderRecPvLayer(
+    state.recPendingPos && recCandidateGroupMap.has(state.recPendingPos) ? state.recPendingPos : state.recPvPos
+  );
+
   // Scale helper for candidate group hover (closure over recCandidateGroupMap)
   // Uses CSS style.transform so the CSS transition fires.
   let _recHoveredCandPos = null;
@@ -1125,15 +1233,22 @@ function buildRecordBoardSvg(record, stones, lastMove, nextColor, candidates = n
     if (info) {
       scaleRecCandidateAt(pos);
       showCandidateTooltip(info.c, pos, e.clientX, e.clientY);
+      renderRecPvLayer(pos);
     } else {
       scaleRecCandidateAt(null);
       hideCandidateTooltip();
+      renderRecPvLayer(
+        state.recPendingPos && recCandidateGroupMap.has(state.recPendingPos) ? state.recPendingPos : state.recPvPos ?? null
+      );
     }
   });
   svg.addEventListener('mouseleave', () => {
     ghost.setAttribute('visibility', 'hidden');
     scaleRecCandidateAt(null);
     hideCandidateTooltip();
+    renderRecPvLayer(
+      state.recPendingPos && recCandidateGroupMap.has(state.recPendingPos) ? state.recPendingPos : state.recPvPos ?? null
+    );
   });
 
   svg.addEventListener('click', e => {
@@ -1141,10 +1256,23 @@ function buildRecordBoardSvg(record, stones, lastMove, nextColor, candidates = n
     const pos = e.target.getAttribute('data-pos');
     const twoTap = document.getElementById('chk-rec-two-tap')?.checked;
 
+    // タッチデバイス + 非2タップ: 候補手タップでPVピン表示
+    if (isTouchDevice && !twoTap && recCandidateGroupMap.has(pos)) {
+      if (state.recPvPos !== pos) {
+        state.recPvPos = pos;
+        renderRecPvLayer(pos);
+        return;
+      }
+      // 同じ候補手を再タップ → PV解除して着手へ
+      state.recPvPos = null;
+      renderRecPvLayer(null);
+    }
+
     if (twoTap) {
       if (state.recPendingPos === pos) {
         // 2回目のタップ → 着手確定
         state.recPendingPos = null;
+        state.recPvPos = null;
         state.recordAnalysis = null;
         socket.emit('record-add-move', { recordId: state.currentRecordId, color: nextColor, pos });
       } else {
@@ -1156,6 +1284,7 @@ function buildRecordBoardSvg(record, stones, lastMove, nextColor, candidates = n
       return;
     }
 
+    state.recPvPos = null;
     state.recordAnalysis = null;
     socket.emit('record-add-move', { recordId: state.currentRecordId, color: nextColor, pos });
   });
@@ -1282,6 +1411,7 @@ socket.on('record', record => {
   const prevNodeId = state.currentRecord?.currentNodeId;
   if (record.currentNodeId !== prevNodeId) {
     state.recPendingPos = null;
+    state.recPvPos = null;
     // ノード移動時: 新しいノードの保存済み候補手を復元（なければクリア）
     state.recordAnalysis = record.currentCandidates ?? null;
   } else if (record.status === 'idle') {
