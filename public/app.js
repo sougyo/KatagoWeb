@@ -966,10 +966,16 @@ function renderRecord(record) {
   document.getElementById('rec-move-info').textContent = `第 ${moveNum} 手`;
 
   // Status badge
+  const autoAnalyzing = record.autoAnalyzing ?? false;
   const statusEl = document.getElementById('rec-status');
   if (status === 'initializing') {
     statusEl.textContent = 'KataGo 起動中…';
     statusEl.className   = 'game-status status-thinking';
+  } else if (status === 'analyzing' && autoAnalyzing) {
+    const prog = record.autoAnalyzeProgress;
+    const progText = prog ? ` (${prog.current + 1}/${prog.total})` : '';
+    statusEl.textContent = `全解析中…${progText}`;
+    statusEl.className   = 'game-status status-analyzing';
   } else if (status === 'analyzing') {
     statusEl.textContent = '分析中…';
     statusEl.className   = 'game-status status-analyzing';
@@ -986,20 +992,26 @@ function renderRecord(record) {
   const parent  = node?.parentId;
   const hasPrev = parent != null;
   const hasNext = (node?.children?.length ?? 0) > 0;
-  document.getElementById('btn-rec-first').disabled = !hasPrev;
-  document.getElementById('btn-rec-prev').disabled  = !hasPrev;
-  document.getElementById('btn-rec-next').disabled  = !hasNext;
-  document.getElementById('btn-rec-last').disabled  = !hasNext;
+  document.getElementById('btn-rec-first').disabled = !hasPrev || autoAnalyzing;
+  document.getElementById('btn-rec-prev').disabled  = !hasPrev || autoAnalyzing;
+  document.getElementById('btn-rec-next').disabled  = !hasNext || autoAnalyzing;
+  document.getElementById('btn-rec-last').disabled  = !hasNext || autoAnalyzing;
 
   // Delete button: enabled only when current node has a real move (not a setup/info phantom node)
-  document.getElementById('btn-rec-delete').disabled = !(hasPrev && node?.move != null);
+  document.getElementById('btn-rec-delete').disabled = !(hasPrev && node?.move != null) || autoAnalyzing;
 
   // Analyze button
   const btnAna = document.getElementById('btn-rec-analyze');
   const isAnalyzing = status === 'analyzing';
-  btnAna.textContent = isAnalyzing ? '分析停止' : '分析';
-  btnAna.classList.toggle('btn-analyze-active', isAnalyzing);
-  btnAna.disabled = status === 'initializing';
+  btnAna.textContent = isAnalyzing && !autoAnalyzing ? '分析停止' : '分析';
+  btnAna.classList.toggle('btn-analyze-active', isAnalyzing && !autoAnalyzing);
+  btnAna.disabled = status === 'initializing' || autoAnalyzing;
+
+  // Auto-analyze button
+  const btnAutoAna = document.getElementById('btn-rec-auto-analyze');
+  btnAutoAna.textContent = autoAnalyzing ? '全解析停止' : '全解析';
+  btnAutoAna.classList.toggle('btn-analyze-active', autoAnalyzing);
+  btnAutoAna.disabled = status === 'initializing';
 
   // Analysis panel
   const panel = document.getElementById('rec-analysis-panel');
@@ -2042,6 +2054,16 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       state.recordAnalysis = null;
       socket.emit('record-start-analysis', state.currentRecordId);
+    }
+  });
+
+  document.getElementById('btn-rec-auto-analyze').addEventListener('click', () => {
+    if (!state.currentRecordId) return;
+    if (state.currentRecord?.autoAnalyzing) {
+      socket.emit('record-stop-auto-analyze', state.currentRecordId);
+    } else {
+      state.recordAnalysis = null;
+      socket.emit('record-auto-analyze', state.currentRecordId);
     }
   });
 

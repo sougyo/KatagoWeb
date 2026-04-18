@@ -439,6 +439,10 @@ function recordPublic(r) {
     status:        r.status,
     createdAt:     r.createdAt,
     currentCandidates: currentNode?.candidates ?? null,
+    autoAnalyzing: r._autoAnalyze ?? false,
+    autoAnalyzeProgress: r._autoAnalyze
+      ? { current: r._autoAnalyzeCurrent ?? 0, total: r._autoAnalyzeTotal ?? 0 }
+      : null,
   };
 }
 
@@ -1063,6 +1067,137 @@ io.on('connection', socket => {
     if (node?.winrate != null) _stmtUpdateNodeCandidates.run(node.winrate, node.scoreMean ?? null, node.candidates ? JSON.stringify(node.candidates) : null, node.id);
     r.status = 'idle';
     io.to(recordId).emit('record', recordPublic(r));
+  });
+
+  // ---- Auto-analyze all moves in main line ----
+
+  socket.on('record-auto-analyze', async recordId => {
+    const r = records.get(recordId);
+    if (!r || r._autoAnalyze || r.status === 'initializing') return;
+
+    // Stop any running manual analysis
+    if (r.gtp?.isAnalyzing) {
+      _clearAnalysisTimer(r);
+      await r.gtp.stopAnalysis().catch(() => {});
+      const cur = r.nodes.get(r.currentNodeId);
+      if (cur?.winrate != null) _stmtUpdateNodeCandidates.run(cur.winrate, cur.scoreMean ?? null, cur.candidates ? JSON.stringify(cur.candidates) : null, cur.id);
+      r.status = 'idle';
+    }
+
+    // Build main line: root → last node following first children
+    const mainLine = [];
+    let cur = r.rootId;
+    while (cur) {
+      mainLine.push(cur);
+      const n = r.nodes.get(cur);
+      cur = n?.children?.[0] ?? null;
+    }
+
+    // Start KataGo if needed
+    if (!r.gtp) {
+      r.status = 'initializing';
+      io.to(recordId).emit('record', recordPublic(r));
+      try {
+        const gtp = new GTPClient(KATAGO_BIN, KATAGO_CFG, KATAGO_MDL);
+        r.gtp = gtp;
+        await gtp.start();
+      } catch (e) {
+        r.status = 'error';
+        io.to(recordId).emit('record', recordPublic(r));
+        return;
+      }
+    }
+
+    r._autoAnalyze        = true;
+    r._autoAnalyzeTotal   = mainLine.length;
+    r._autoAnalyzeCurrent = 0;
+    r._autoAnalyzeResolve = null;
+    r._autoAnalyzeTimer   = null;
+
+    const rawKomi = Number.isFinite(r.komi) ? r.komi : 6.5;
+    const komi    = Math.round(rawKomi * 2) / 2;
+
+    try {
+      for (let i = 0; i < mainLine.length; i++) {
+        if (!r._autoAnalyze) break;
+
+        const nodeId = mainLine[i];
+        if (!r.nodes.has(nodeId)) break;
+
+        r.currentNodeId       = nodeId;
+        r.status              = 'analyzing';
+        r._autoAnalyzeCurrent = i;
+        _stmtUpdateRecordCurrent.run(nodeId, recordId);
+        io.to(recordId).emit('record', recordPublic(r));
+
+        const gtp = r.gtp;
+        if (!gtp) break;
+        if (gtp.isAnalyzing) await gtp.stopAnalysis().catch(() => {});
+
+        await gtp.send(`boardsize ${r.size}`);
+        await gtp.send('clear_board');
+        await gtp.send(`komi ${komi}`);
+        const path = buildGtpPath(r, nodeId);
+        for (const { color, pos } of path) {
+          if (pos === 'pass') await gtp.send(`play ${color} pass`);
+          else await gtp.play(color, pos);
+        }
+
+        const isWhiteToMove = _getNextColor(r, nodeId) === 'white';
+        const toBlackPov = c => isWhiteToMove
+          ? { ...c,
+              winrate:   c.winrate   != null ? 1 - c.winrate   : c.winrate,
+              scoreMean: c.scoreMean != null ? -c.scoreMean     : c.scoreMean }
+          : c;
+
+        const accCandidates = new Map();
+        gtp.startAnalysis(20, lines => {
+          for (const c of lines.map(_parseAnalysisLine)) {
+            if (c.move && c.move.toLowerCase() !== 'pass') accCandidates.set(c.move, toBlackPov(c));
+          }
+          const candidates = [...accCandidates.values()]
+            .sort((a, b) => (b.visits ?? 0) - (a.visits ?? 0))
+            .slice(0, 20)
+            .map((c, idx) => ({ ...c, order: idx }));
+          const best = candidates.find(c => c.order === 0) ?? candidates[0];
+          if (best) {
+            const node = r.nodes.get(nodeId);
+            if (node) { node.winrate = best.winrate; node.scoreMean = best.scoreMean ?? null; node.candidates = candidates; }
+          }
+          io.to(recordId).emit('record-analysis', candidates);
+        });
+
+        // Wait 3 seconds (interrupted immediately on stop)
+        await new Promise(resolve => {
+          r._autoAnalyzeResolve = resolve;
+          r._autoAnalyzeTimer   = setTimeout(resolve, 3000);
+        });
+        r._autoAnalyzeResolve = null;
+        r._autoAnalyzeTimer   = null;
+
+        if (gtp.isAnalyzing) await gtp.stopAnalysis().catch(() => {});
+        const node = r.nodes.get(nodeId);
+        if (node?.winrate != null) {
+          _stmtUpdateNodeCandidates.run(node.winrate, node.scoreMean ?? null, node.candidates ? JSON.stringify(node.candidates) : null, node.id);
+        }
+      }
+    } catch (e) {
+      console.error(`[record ${recordId}] auto-analyze error:`, e.message);
+    }
+
+    r._autoAnalyze        = false;
+    r._autoAnalyzeTotal   = null;
+    r._autoAnalyzeCurrent = null;
+    r.status              = 'idle';
+    io.to(recordId).emit('record', recordPublic(r));
+  });
+
+  socket.on('record-stop-auto-analyze', recordId => {
+    const r = records.get(recordId);
+    if (!r || !r._autoAnalyze) return;
+    r._autoAnalyze = false;
+    if (r._autoAnalyzeTimer) { clearTimeout(r._autoAnalyzeTimer); r._autoAnalyzeTimer = null; }
+    if (r._autoAnalyzeResolve) { r._autoAnalyzeResolve(); r._autoAnalyzeResolve = null; }
   });
 });
 
