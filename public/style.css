@@ -731,6 +731,104 @@ html, body {
 }
 
 /* ============================================================
+   Score diff label (sidebar-info)
+   ============================================================ */
+.score-diff {
+  font-size: .78rem;
+  font-weight: 600;
+  margin-top: 2px;
+  min-height: 1.1em;
+}
+.score-diff.diff-black { color: #1a1a2e; }
+.score-diff.diff-white { color: var(--text-muted); }
+
+/* ============================================================
+   Auto-analyze settings
+   ============================================================ */
+.auto-analyze-opts {
+  font-size: .82rem;
+  color: var(--text-muted);
+}
+.auto-analyze-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.opt-label-sm {
+  font-size: .78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.compact-input {
+  width: 56px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: .82rem;
+}
+.range-sep {
+  font-size: .82rem;
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   Score diff ranking
+   ============================================================ */
+.ranking-wrap {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 16px;
+}
+.ranking-toggle-btn {
+  width: 100%;
+  font-size: .8rem;
+  padding: 5px 10px;
+}
+.ranking-list {
+  margin-top: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.ranking-list.hidden { display: none !important; }
+.ranking-empty {
+  font-size: .78rem;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+.ranking-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: .8rem;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.ranking-row:hover { background: var(--surface2); }
+.ranking-num {
+  width: 18px;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: .75rem;
+  flex-shrink: 0;
+}
+.ranking-move {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ranking-diff {
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.diff-black { color: #1a1a2e; }
+.diff-white { color: #6b7280; }
+
+/* ============================================================
    Scrollbar styling (webkit)
    ============================================================ */
 ::-webkit-scrollbar               { width: 6px; }

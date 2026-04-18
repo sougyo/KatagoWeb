@@ -1042,6 +1042,28 @@ function renderRecord(record) {
     if (target) socket.emit('record-navigate', { recordId: state.currentRecordId, nodeId: target.id });
   };
   renderWinrateGraph('rec-winrate-graph-wrap', recordWinrateEntries(nodes, currentNodeId, liveRecBest?.winrate ?? null, liveRecBest?.scoreMean ?? null), moveNum, totalRecMoves, onRecSeek);
+
+  // Score diff (current move vs previous move)
+  const scoreDiffEl = document.getElementById('rec-score-diff');
+  const curNode2   = nodes[currentNodeId];
+  const parentNode2 = curNode2?.parentId ? nodes[curNode2.parentId] : null;
+  const curScore   = liveRecBest?.scoreMean ?? curNode2?.scoreMean;
+  const prevScore  = parentNode2?.scoreMean;
+  if (curScore != null && isFinite(curScore) && prevScore != null && isFinite(prevScore)) {
+    const diff = curScore - prevScore;
+    const absDiff = Math.abs(diff);
+    const who = diff > 0 ? '黒' : '白';
+    scoreDiffEl.textContent = `前手比: ${who} +${absDiff.toFixed(1)}目`;
+    scoreDiffEl.className = `score-diff ${diff > 0 ? 'diff-black' : 'diff-white'}`;
+  } else {
+    scoreDiffEl.textContent = '';
+    scoreDiffEl.className = 'score-diff';
+  }
+
+  // Update ranking if visible
+  if (!document.getElementById('rec-ranking-list').classList.contains('hidden')) {
+    renderScoreRanking(record);
+  }
 }
 
 function updateRecordAnalysisPanel(candidates) {
@@ -1057,6 +1079,49 @@ function updateRecordAnalysisPanel(candidates) {
     sm != null && !isNaN(sm)
       ? `スコア: ${sm >= 0 ? '黒' : '白'} +${Math.abs(sm).toFixed(1)}`
       : '';
+}
+
+function renderScoreRanking(record) {
+  const list = document.getElementById('rec-ranking-list');
+  if (!list) return;
+  const { nodes, rootId } = record;
+
+  const mainLine = [];
+  let cur = rootId;
+  while (cur) { const n = nodes[cur]; if (!n) break; mainLine.push(n); cur = n.children?.[0] ?? null; }
+
+  const entries = [];
+  for (let i = 1; i < mainLine.length; i++) {
+    const n = mainLine[i];
+    const p = mainLine[i - 1];
+    if (n.scoreMean == null || !isFinite(n.scoreMean)) continue;
+    if (p.scoreMean == null || !isFinite(p.scoreMean)) continue;
+    const diff = n.scoreMean - p.scoreMean;
+    entries.push({ moveNum: i, nodeId: n.id, color: n.move?.color ?? 'black', pos: n.move?.pos ?? '?', diff });
+  }
+  entries.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+  if (entries.length === 0) {
+    list.innerHTML = '<div class="ranking-empty">解析済みデータがありません</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  entries.forEach((e, rank) => {
+    const who = e.diff > 0 ? '黒' : '白';
+    const mark = e.color === 'black' ? '●' : '○';
+    const posStr = e.pos === 'pass' ? 'パス' : (e.pos ?? '?');
+    const row = document.createElement('div');
+    row.className = 'ranking-row';
+    row.innerHTML =
+      `<span class="ranking-num">${rank + 1}</span>` +
+      `<span class="ranking-move">${mark} 第${e.moveNum}手 ${posStr}</span>` +
+      `<span class="ranking-diff ${e.diff > 0 ? 'diff-black' : 'diff-white'}">${who} +${Math.abs(e.diff).toFixed(1)}</span>`;
+    row.addEventListener('click', () => {
+      socket.emit('record-navigate', { recordId: state.currentRecordId, nodeId: e.nodeId });
+    });
+    list.appendChild(row);
+  });
 }
 
 function buildRecordBoardSvg(record, stones, lastMove, nextColor, candidates = null) {
@@ -2063,8 +2128,24 @@ document.addEventListener('DOMContentLoaded', () => {
       socket.emit('record-stop-auto-analyze', state.currentRecordId);
     } else {
       state.recordAnalysis = null;
-      socket.emit('record-auto-analyze', state.currentRecordId);
+      const fromVal = parseInt(document.getElementById('rec-from-move').value, 10);
+      const toVal   = parseInt(document.getElementById('rec-to-move').value, 10);
+      const secVal  = parseFloat(document.getElementById('rec-analysis-sec').value);
+      socket.emit('record-auto-analyze', {
+        recordId:    state.currentRecordId,
+        fromMove:    isFinite(fromVal) ? fromVal : undefined,
+        toMove:      isFinite(toVal)   ? toVal   : undefined,
+        analysisSec: isFinite(secVal) && secVal > 0 ? secVal : 3,
+      });
     }
+  });
+
+  document.getElementById('btn-rec-ranking').addEventListener('click', () => {
+    const list = document.getElementById('rec-ranking-list');
+    const btn  = document.getElementById('btn-rec-ranking');
+    const isHidden = list.classList.toggle('hidden');
+    btn.textContent = isHidden ? '目数変動ランキング ▼' : '目数変動ランキング ▲';
+    if (!isHidden && state.currentRecord) renderScoreRanking(state.currentRecord);
   });
 
   // 2タップ確認チェックボックス: OFF時は仮置きをキャンセル

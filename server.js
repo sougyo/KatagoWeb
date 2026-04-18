@@ -1071,7 +1071,7 @@ io.on('connection', socket => {
 
   // ---- Auto-analyze all moves in main line ----
 
-  socket.on('record-auto-analyze', async recordId => {
+  socket.on('record-auto-analyze', async ({ recordId, fromMove, toMove, analysisSec } = {}) => {
     const r = records.get(recordId);
     if (!r || r._autoAnalyze || r.status === 'initializing') return;
 
@@ -1108,8 +1108,13 @@ io.on('connection', socket => {
       }
     }
 
+    const fromIdx = (typeof fromMove === 'number' && isFinite(fromMove) && fromMove >= 0) ? Math.min(fromMove, mainLine.length - 1) : 0;
+    const toIdx   = (typeof toMove   === 'number' && isFinite(toMove)   && toMove   >= 0) ? Math.min(toMove,   mainLine.length - 1) : mainLine.length - 1;
+    const waitMs  = (typeof analysisSec === 'number' && isFinite(analysisSec) && analysisSec > 0) ? Math.round(analysisSec * 1000) : 3000;
+    const filteredLine = mainLine.slice(fromIdx, toIdx + 1);
+
     r._autoAnalyze        = true;
-    r._autoAnalyzeTotal   = mainLine.length;
+    r._autoAnalyzeTotal   = filteredLine.length;
     r._autoAnalyzeCurrent = 0;
     r._autoAnalyzeResolve = null;
     r._autoAnalyzeTimer   = null;
@@ -1118,10 +1123,10 @@ io.on('connection', socket => {
     const komi    = Math.round(rawKomi * 2) / 2;
 
     try {
-      for (let i = 0; i < mainLine.length; i++) {
+      for (let i = 0; i < filteredLine.length; i++) {
         if (!r._autoAnalyze) break;
 
-        const nodeId = mainLine[i];
+        const nodeId = filteredLine[i];
         if (!r.nodes.has(nodeId)) break;
 
         r.currentNodeId       = nodeId;
@@ -1167,10 +1172,10 @@ io.on('connection', socket => {
           io.to(recordId).emit('record-analysis', candidates);
         });
 
-        // Wait 3 seconds (interrupted immediately on stop)
+        // Wait analysisSec seconds (interrupted immediately on stop)
         await new Promise(resolve => {
           r._autoAnalyzeResolve = resolve;
-          r._autoAnalyzeTimer   = setTimeout(resolve, 3000);
+          r._autoAnalyzeTimer   = setTimeout(resolve, waitMs);
         });
         r._autoAnalyzeResolve = null;
         r._autoAnalyzeTimer   = null;
