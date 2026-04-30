@@ -1997,7 +1997,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-back').addEventListener('click', showListView);
   document.getElementById('btn-pass').addEventListener('click', () => {
-    if (state.currentBoardId) {
+    if (state.currentBoardId && confirm('パスしますか？')) {
       state.analysisData = null;
       socket.emit('pass', state.currentBoardId);
     }
