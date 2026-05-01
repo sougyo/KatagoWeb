@@ -1,0 +1,16 @@
+services:
+  app:
+    image: node:latest
+    privileged: true
+    environment:
+      - KATAGO_HOME=/katago-bin
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - $KATAGO_HOME:/katago-bin
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    command: sh -c "apt-get update && 
+                    apt-get install -y fuse &&
+                    npm install && npm start"
