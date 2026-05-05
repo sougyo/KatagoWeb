@@ -742,6 +742,15 @@ html, body {
 .score-diff.diff-black { color: #1a1a2e; }
 .score-diff.diff-white { color: var(--text-muted); }
 
+.captures-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: .78rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
 /* ============================================================
    Auto-analyze settings
    ============================================================ */

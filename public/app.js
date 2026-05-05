@@ -55,6 +55,8 @@ class GoBoard {
   constructor(size) {
     this.size   = size;
     this.stones = {}; // {pos: 'black'|'white'}
+    this.capturedByBlack = 0; // white stones black has taken
+    this.capturedByWhite = 0; // black stones white has taken
   }
 
   play(color, pos) {
@@ -64,7 +66,9 @@ class GoBoard {
     // Remove captured opponent groups first
     for (const nb of this._adj(pos)) {
       if (this.stones[nb] === opp && !this._hasLiberty(nb, new Set())) {
-        this._removeGroup(nb);
+        const n = this._removeGroup(nb);
+        if (color === 'black') this.capturedByBlack += n;
+        else this.capturedByWhite += n;
       }
     }
     // Remove own group if suicidal (ko-less simplified)
@@ -99,14 +103,17 @@ class GoBoard {
   _removeGroup(pos) {
     const color = this.stones[pos];
     const stack = [pos];
+    let count = 0;
     while (stack.length) {
       const cur = stack.pop();
       if (!this.stones[cur] || this.stones[cur] !== color) continue;
       delete this.stones[cur];
+      count++;
       for (const nb of this._adj(cur)) {
         if (this.stones[nb] === color) stack.push(nb);
       }
     }
+    return count;
   }
 }
 
@@ -222,7 +229,13 @@ function computeStones(nodes, rootId, nodeId, size) {
     }
     if (node.move) board.play(node.move.color, node.move.pos);
   }
-  return board.stones;
+  return { stones: board.stones, capturedByBlack: board.capturedByBlack, capturedByWhite: board.capturedByWhite };
+}
+
+function computeGameCaptures(moves, size) {
+  const board = new GoBoard(size);
+  for (const m of moves) board.play(m.color, m.position);
+  return { capturedByBlack: board.capturedByBlack, capturedByWhite: board.capturedByWhite };
 }
 
 function getMoveNumber(nodes, nodeId) {
@@ -529,6 +542,11 @@ function renderGame(board) {
     `第 ${board.moves.length} 手`;
   document.getElementById('komi-label').textContent =
     `コミ ${board.komi}  |  置き石 ${board.handicap}`;
+
+  // Captures
+  const { capturedByBlack: capB, capturedByWhite: capW } = computeGameCaptures(board.moves, board.size);
+  document.getElementById('captures-black').textContent = `● あげはま: ${capB}`;
+  document.getElementById('captures-white').textContent = `○ あげはま: ${capW}`;
 
   // Controls
   const canPlay     = (board.status === 'playing' || board.status === 'analyzing') && board.currentPlayer === 'black';
@@ -1020,7 +1038,7 @@ function renderRecord(record) {
   if (hasAna) updateRecordAnalysisPanel(state.recordAnalysis);
 
   // Board
-  const stones   = computeStones(nodes, rootId, currentNodeId, size);
+  const { stones, capturedByBlack, capturedByWhite } = computeStones(nodes, rootId, currentNodeId, size);
   const lastNode = nodes[currentNodeId];
   const lastMove = lastNode?.move?.pos && lastNode.move.pos !== 'pass' ? lastNode.move.pos : null;
   const nextColor = getNextColor(nodes, currentNodeId);
@@ -1029,6 +1047,10 @@ function renderRecord(record) {
   container.innerHTML = '';
   container.appendChild(buildRecordBoardSvg(record, stones, lastMove, nextColor,
     hasAna && state.showCandidates ? state.recordAnalysis : null));
+
+  // Captures
+  document.getElementById('rec-captures-black').textContent = `● あげはま: ${capturedByBlack}`;
+  document.getElementById('rec-captures-white').textContent = `○ あげはま: ${capturedByWhite}`;
 
   renderMoveTree(record);
 
@@ -1506,7 +1528,7 @@ socket.on('record-analysis', candidates => {
   updateRecordAnalysisPanel(candidates);
   // Re-render board with candidates
   const { nodes, rootId, currentNodeId, size } = state.currentRecord;
-  const stones    = computeStones(nodes, rootId, currentNodeId, size);
+  const { stones }  = computeStones(nodes, rootId, currentNodeId, size);
   const lastNode  = nodes[currentNodeId];
   const lastMove  = lastNode?.move?.pos && lastNode.move.pos !== 'pass' ? lastNode.move.pos : null;
   const nextColor = getNextColor(nodes, currentNodeId);
@@ -1964,7 +1986,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Re-render record board if analysis data is present
     if (state.currentRecord && state.recordAnalysis) {
       const { nodes, rootId, currentNodeId, size } = state.currentRecord;
-      const stones    = computeStones(nodes, rootId, currentNodeId, size);
+      const { stones }    = computeStones(nodes, rootId, currentNodeId, size);
       const lastNode  = nodes[currentNodeId];
       const lastMove  = lastNode?.move?.pos && lastNode.move.pos !== 'pass' ? lastNode.move.pos : null;
       const nextColor = getNextColor(nodes, currentNodeId);
