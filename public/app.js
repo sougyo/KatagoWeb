@@ -49,6 +49,82 @@ function updateSgfMetaDisplay(text) {
 }
 
 // ============================================================
+// SGF export
+// ============================================================
+
+// GTP position (e.g. 'D16') → SGF 2-letter coord (e.g. 'dd') for given board size
+function gtpToSgfCoord(pos, size) {
+  if (!pos || pos.toUpperCase() === 'PASS') return '';
+  const p = pos.toUpperCase();
+  const col = GTP_COLS.indexOf(p[0]);
+  const row = parseInt(p.slice(1), 10);
+  if (col < 0 || isNaN(row)) return '';
+  return String.fromCharCode(97 + col) + String.fromCharCode(97 + (size - row));
+}
+
+// Recursively build SGF for a node and its descendants
+function buildSgfSubtree(nodes, nodeId, size) {
+  const node = nodes[nodeId];
+  if (!node) return '';
+
+  let s = ';';
+
+  if (node.setup) {
+    if (node.setup.black?.length)
+      s += 'AB' + node.setup.black.map(p => `[${gtpToSgfCoord(p, size)}]`).join('');
+    if (node.setup.white?.length)
+      s += 'AW' + node.setup.white.map(p => `[${gtpToSgfCoord(p, size)}]`).join('');
+    if (node.setup.empty?.length)
+      s += 'AE' + node.setup.empty.map(p => `[${gtpToSgfCoord(p, size)}]`).join('');
+  }
+
+  if (node.move) {
+    const tag = node.move.color === 'black' ? 'B' : 'W';
+    s += `${tag}[${gtpToSgfCoord(node.move.pos, size)}]`;
+  }
+
+  const children = node.children ?? [];
+  if (children.length === 0) return s;
+  if (children.length === 1) return s + '\n' + buildSgfSubtree(nodes, children[0], size);
+  return s + '\n' + children.map(cid => `(${buildSgfSubtree(nodes, cid, size)})`).join('\n');
+}
+
+function exportRecordSGF() {
+  const rec = state.currentRecord;
+  if (!rec) return;
+  const { nodes, rootId, size, komi, name, playerBlack, playerWhite } = rec;
+
+  let header = `;GM[1]FF[4]CA[UTF-8]SZ[${size}]KM[${komi ?? 6.5}]`;
+  if (playerBlack) header += `PB[${playerBlack.replace(/\\/g, '\\\\').replace(/\]/g, '\\]')}]`;
+  if (playerWhite) header += `PW[${playerWhite.replace(/\\/g, '\\\\').replace(/\]/g, '\\]')}]`;
+  if (name)        header += `GN[${name.replace(/\\/g, '\\\\').replace(/\]/g, '\\]')}]`;
+
+  const rootNode = nodes[rootId];
+  const rootSetup = rootNode?.setup;
+  if (rootSetup?.black?.length) header += 'AB' + rootSetup.black.map(p => `[${gtpToSgfCoord(p, size)}]`).join('');
+  if (rootSetup?.white?.length) header += 'AW' + rootSetup.white.map(p => `[${gtpToSgfCoord(p, size)}]`).join('');
+
+  const children = rootNode?.children ?? [];
+  let body = header;
+  if (children.length === 1) {
+    body += '\n' + buildSgfSubtree(nodes, children[0], size);
+  } else if (children.length > 1) {
+    body += '\n' + children.map(cid => `(${buildSgfSubtree(nodes, cid, size)})`).join('\n');
+  }
+
+  const sgf = `(${body})`;
+  const blob = new Blob([sgf], { type: 'application/x-go-sgf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${(name || 'record').replace(/[/\\?%*:|"<>]/g, '_')}.sgf`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ============================================================
 // GoBoard – lightweight board with capture logic (for record replay)
 // ============================================================
 class GoBoard {
@@ -2161,6 +2237,8 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
   });
+
+  document.getElementById('btn-rec-export-sgf').addEventListener('click', exportRecordSGF);
 
   document.getElementById('btn-rec-ranking').addEventListener('click', () => {
     const list = document.getElementById('rec-ranking-list');
